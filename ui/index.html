@@ -1,0 +1,1100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; user-select: none; -webkit-user-select: none; }
+
+  html, body {
+    width: 300px;
+    height: 100%;
+    overflow: hidden;
+    background: transparent;
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  #app {
+    width: 300px;
+    height: 100%;
+    background: rgba(255, 255, 255, 0.95);
+    border-radius: 14px;
+    border: 1px solid rgba(0, 0, 0, 0.10);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    display: flex;
+    flex-direction: column;
+    padding: 10px 12px 8px;
+    color: #1a1a2e;
+    position: relative;
+    overflow: hidden;
+  }
+
+  /* Top row: glucose value + trend + status + time + close button */
+  #top-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+    -webkit-app-region: drag;
+  }
+
+  #glucose-value {
+    font-size: 36px;
+    font-weight: 700;
+    line-height: 1;
+    letter-spacing: -1.5px;
+    color: #16a34a;
+    transition: color 0.4s ease;
+  }
+
+  #trend-arrow {
+    font-size: 20px;
+    line-height: 1;
+    color: #16a34a;
+    transition: color 0.4s ease;
+  }
+
+  #top-meta {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    margin-left: 2px;
+  }
+
+  #status-text {
+    font-size: 12px;
+    font-weight: 600;
+    color: #16a34a;
+    transition: color 0.4s ease;
+  }
+
+  #time-text {
+    font-size: 11px;
+    color: rgba(26, 26, 46, 0.45);
+    margin-top: 1px;
+  }
+
+  /* Top-right icon button group */
+  #icon-btns {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    flex-shrink: 0;
+    -webkit-app-region: no-drag;
+  }
+
+  .icon-btn {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    border: none;
+    background: rgba(0, 0, 0, 0.06);
+    color: rgba(26, 26, 46, 0.50);
+    font-size: 13px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    -webkit-app-region: no-drag;
+    user-select: none;
+    transition: background 0.15s, color 0.15s;
+    flex-shrink: 0;
+  }
+  .icon-btn:hover { background: rgba(0,0,0,0.12); color: #1a1a2e; }
+  .icon-btn.spinning { animation: spin 1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* Stats row: max / avg / min */
+  #stats-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 4px;
+    flex-shrink: 0;
+  }
+
+  .stat-item {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    font-size: 12px;
+  }
+
+  .stat-icon {
+    font-size: 10px;
+    color: rgba(26, 26, 46, 0.45);
+  }
+
+  .stat-val {
+    font-weight: 600;
+    color: #16a34a;
+    transition: color 0.4s ease;
+  }
+
+  /* Time range + compact button row */
+  #range-row {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-top: 5px;
+    flex-shrink: 0;
+    -webkit-app-region: no-drag;
+  }
+
+  .range-btn {
+    height: 22px;
+    padding: 0 8px;
+    border-radius: 6px;
+    border: none;
+    background: rgba(0, 0, 0, 0.06);
+    color: rgba(26, 26, 46, 0.55);
+    font-size: 11px;
+    font-weight: 500;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.15s, color 0.15s;
+    -webkit-app-region: no-drag;
+    user-select: none;
+  }
+
+  .range-btn:hover { background: rgba(0,0,0,0.10); }
+
+  .range-btn.active {
+    background: rgba(0, 120, 255, 0.12);
+    color: #0078ff;
+    font-weight: 600;
+  }
+
+  #range-spacer { flex: 1; }
+
+  #btn-compact {
+    height: 22px;
+    padding: 0 8px;
+    border-radius: 6px;
+    border: none;
+    background: rgba(0, 0, 0, 0.06);
+    color: rgba(26, 26, 46, 0.55);
+    font-size: 11px;
+    font-weight: 500;
+    cursor: pointer;
+    -webkit-app-region: no-drag;
+    user-select: none;
+    transition: background 0.15s, color 0.15s;
+  }
+  #btn-compact:hover { background: rgba(0,0,0,0.10); color: #1a1a2e; }
+
+  /* Chart area */
+  #chart-section {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    margin-top: 5px;
+    min-height: 0;
+    -webkit-app-region: no-drag;
+  }
+
+  #chart-wrap {
+    flex: 1;
+    position: relative;
+    background: rgba(0, 0, 0, 0.03);
+    border-radius: 8px;
+    overflow: hidden;
+    min-height: 0;
+    -webkit-app-region: no-drag;
+  }
+
+  #chart {
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+
+  #chart-tooltip {
+    display: none;
+    position: absolute;
+    top: 4px;
+    background: rgba(26,26,46,0.82);
+    color: #fff;
+    font-size: 10px;
+    font-weight: 500;
+    padding: 3px 6px;
+    border-radius: 5px;
+    pointer-events: none;
+    white-space: nowrap;
+    transform: translateX(-50%);
+  }
+
+  /* Compact mode bottom row */
+
+  /* Compact mode extra layout */
+  #compact-bottom {
+    display: none;
+    align-items: center;
+    gap: 5px;
+    margin-top: 6px;
+    flex-shrink: 0;
+    -webkit-app-region: no-drag;
+  }
+
+  /* ── Settings overlay ── */
+  #settings-overlay {
+    position: absolute;
+    inset: 0;
+    border-radius: 14px;
+    background: rgba(248, 250, 255, 0.98);
+    backdrop-filter: blur(24px);
+    -webkit-backdrop-filter: blur(24px);
+    padding: 12px 14px 10px;
+    display: none;
+    flex-direction: column;
+    overflow: hidden;
+    -webkit-app-region: drag;
+  }
+  #settings-overlay.visible { display: flex; }
+
+  #settings-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+    flex-shrink: 0;
+    -webkit-app-region: no-drag;
+  }
+
+  #settings-title {
+    font-size: 12px;
+    font-weight: 700;
+    color: #1a1a2e;
+    letter-spacing: 0.2px;
+  }
+
+  #settings-close {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    border: none;
+    background: rgba(0,0,0,0.07);
+    color: rgba(26,26,46,0.55);
+    font-size: 14px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    -webkit-app-region: no-drag;
+  }
+  #settings-close:hover { background: rgba(0,0,0,0.12); color: #1a1a2e; }
+
+  #settings-body {
+    flex: 1;
+    overflow-y: auto;
+    min-height: 0;
+    -webkit-app-region: no-drag;
+  }
+  #settings-body::-webkit-scrollbar { width: 3px; }
+  #settings-body::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.12); border-radius: 2px; }
+
+  .s-section { margin-bottom: 11px; }
+
+  .s-label {
+    font-size: 9.5px;
+    font-weight: 600;
+    color: rgba(26,26,46,0.38);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 4px;
+  }
+
+  .s-input {
+    width: 100%;
+    height: 25px;
+    border: 1px solid rgba(0,0,0,0.12);
+    border-radius: 6px;
+    background: rgba(255,255,255,0.85);
+    padding: 0 8px;
+    font-size: 11.5px;
+    color: #1a1a2e;
+    outline: none;
+    margin-bottom: 4px;
+    -webkit-app-region: no-drag;
+    user-select: text;
+    -webkit-user-select: text;
+  }
+  .s-input:focus { border-color: #0078ff; }
+
+  .s-check-row {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    margin-bottom: 5px;
+    -webkit-app-region: no-drag;
+    cursor: pointer;
+  }
+  .s-check-row input { -webkit-app-region: no-drag; cursor: pointer; }
+  .s-check-row span { font-size: 11px; color: rgba(26,26,46,0.65); }
+
+  .s-btn-row { display: flex; gap: 5px; align-items: center; margin-bottom: 3px; }
+
+  .s-btn {
+    height: 23px;
+    padding: 0 10px;
+    border-radius: 6px;
+    border: none;
+    font-size: 11px;
+    font-weight: 500;
+    cursor: pointer;
+    -webkit-app-region: no-drag;
+    transition: background 0.15s;
+  }
+  .s-btn-sec { background: rgba(0,0,0,0.06); color: rgba(26,26,46,0.65); }
+  .s-btn-sec:hover { background: rgba(0,0,0,0.10); }
+  .s-btn-pri { background: rgba(0,120,255,0.10); color: #0078ff; font-weight: 600; }
+  .s-btn-pri:hover { background: rgba(0,120,255,0.18); }
+
+  .s-status {
+    font-size: 10.5px;
+    min-height: 13px;
+    margin-top: 1px;
+    flex: 1;
+  }
+  .s-status.ok { color: #16a34a; }
+  .s-status.err { color: #dc2626; }
+
+  .s-divider {
+    height: 1px;
+    background: rgba(0,0,0,0.07);
+    margin: 0 0 10px;
+  }
+
+  .interval-btn {
+    height: 23px;
+    padding: 0 9px;
+    border-radius: 6px;
+    border: none;
+    background: rgba(0,0,0,0.06);
+    color: rgba(26,26,46,0.55);
+    font-size: 11px;
+    font-weight: 500;
+    cursor: pointer;
+    -webkit-app-region: no-drag;
+    transition: background 0.15s, color 0.15s;
+  }
+  .interval-btn.active {
+    background: rgba(0,120,255,0.12);
+    color: #0078ff;
+    font-weight: 600;
+  }
+  .interval-btn:hover:not(.active) { background: rgba(0,0,0,0.10); }
+
+  /* ── Expand / Collapse animation ── */
+  #app { transform-origin: top right; }
+
+  @keyframes expandIn {
+    from { transform: scale(0.12); opacity: 0; }
+    to   { transform: scale(1);    opacity: 1; }
+  }
+  @keyframes collapseOut {
+    from { transform: scale(1);    opacity: 1; }
+    to   { transform: scale(0.12); opacity: 0; }
+  }
+  #app.anim-expand {
+    animation: expandIn 0.22s cubic-bezier(0.34, 1.4, 0.64, 1) forwards;
+  }
+  #app.anim-collapse {
+    animation: collapseOut 0.18s cubic-bezier(0.4, 0, 1, 1) forwards;
+  }
+</style>
+</head>
+<body>
+<div id="app">
+
+  <!-- Top row: glucose value + trend + status/time + icon button group -->
+  <div id="top-row">
+    <div id="glucose-value">--</div>
+    <div id="trend-arrow">→</div>
+    <div id="top-meta">
+      <span id="status-text">Waiting...</span>
+      <span id="time-text"></span>
+    </div>
+    <div id="icon-btns">
+      <button class="icon-btn" id="btn-refresh" onclick="onRefreshClick()" title="Refresh">↻</button>
+      <button class="icon-btn" id="btn-settings" onclick="send({action:'open_settings'})" title="Settings">⚙</button>
+      <button class="icon-btn" onclick="send({action:'minimize_to_ball'})" title="Minimize">×</button>
+    </div>
+  </div>
+
+  <!-- Stats row -->
+  <div id="stats-row">
+    <div class="stat-item">
+      <span class="stat-icon">▲</span>
+      <span class="stat-val" id="stat-max">--</span>
+    </div>
+    <div class="stat-item">
+      <span class="stat-icon">●</span>
+      <span class="stat-val" id="stat-avg">--</span>
+    </div>
+    <div class="stat-item">
+      <span class="stat-icon">▼</span>
+      <span class="stat-val" id="stat-min">--</span>
+    </div>
+  </div>
+
+  <!-- Time range + compact button row -->
+  <div id="range-row">
+    <button class="range-btn" data-range="30" onclick="setRange(30)">30m</button>
+    <button class="range-btn active" data-range="180" onclick="setRange(180)">3h</button>
+    <button class="range-btn" data-range="360" onclick="setRange(360)">6h</button>
+    <button class="range-btn" data-range="1440" onclick="setRange(1440)">24h</button>
+    <div id="range-spacer"></div>
+    <button class="icon-btn" onclick="toggleCompact()" title="Brief" style="font-size:11px;">⊟</button>
+  </div>
+
+  <!-- Chart area -->
+  <div id="chart-section">
+    <div id="chart-wrap" onmousemove="onChartMouseMove(event)" onmouseleave="onChartMouseLeave()">
+      <canvas id="chart"></canvas>
+      <div id="chart-tooltip"></div>
+    </div>
+  </div>
+
+  <!-- Compact mode bottom -->
+  <div id="compact-bottom">
+    <div class="stat-item"><span class="stat-icon">▲</span><span class="stat-val" id="stat-max-c">--</span></div>
+    <div class="stat-item"><span class="stat-icon">●</span><span class="stat-val" id="stat-avg-c">--</span></div>
+    <div class="stat-item"><span class="stat-icon">▼</span><span class="stat-val" id="stat-min-c">--</span></div>
+    <div style="flex:1"></div>
+    <button class="range-btn active" data-range="30" onclick="setRange(30)">30m</button>
+    <button class="range-btn" data-range="180" onclick="setRange(180)">3h</button>
+    <button class="range-btn" data-range="1440" onclick="setRange(1440)">24h</button>
+    <button class="icon-btn" onclick="toggleCompact()" title="Expand" style="font-size:11px;">⊞</button>
+  </div>
+
+  <!-- Settings overlay -->
+  <div id="settings-overlay">
+    <div id="settings-header">
+      <span id="settings-title">Settings</span>
+      <button id="settings-close" onclick="closeSettings()">✕</button>
+    </div>
+    <div id="settings-body">
+
+      <!-- Dexcom -->
+      <div class="s-section">
+        <div class="s-label">Dexcom Account</div>
+        <input type="text" id="s-username" class="s-input" placeholder="Username (email)" autocomplete="off" spellcheck="false">
+        <input type="password" id="s-password" class="s-input" placeholder="Password" autocomplete="off">
+        <label class="s-check-row">
+          <input type="checkbox" id="s-ous">
+          <span>Outside US (OUS)</span>
+        </label>
+        <div class="s-btn-row">
+          <button class="s-btn s-btn-sec" onclick="testDexcom()">Test</button>
+          <button class="s-btn s-btn-pri" onclick="saveDexcom()">Save &amp; Login</button>
+          <div id="dexcom-status" class="s-status"></div>
+        </div>
+      </div>
+
+      <div class="s-divider"></div>
+
+      <!-- Display Mode + Unit + Refresh -->
+      <div class="s-section">
+        <div class="s-label">Glucose Unit</div>
+        <div class="s-btn-row" style="margin-bottom:5px;">
+          <button class="interval-btn" data-unit="mgdl" onclick="selectUnit('mgdl')">mg/dL</button>
+          <button class="interval-btn" data-unit="mmol" onclick="selectUnit('mmol')">mmol/L</button>
+        </div>
+        <div class="s-label">Display Mode</div>
+        <div class="s-btn-row" style="margin-bottom:5px;">
+          <button class="interval-btn" data-mode="window" onclick="selectMode('window')">Standard</button>
+          <button class="interval-btn" data-mode="hover" onclick="selectMode('hover')">Hover Ball</button>
+        </div>
+        <div class="s-label">Refresh Interval</div>
+        <div class="s-btn-row" style="margin-bottom:5px;">
+          <button class="interval-btn" data-v="60" onclick="selectInterval(60)">1 min</button>
+          <button class="interval-btn" data-v="120" onclick="selectInterval(120)">2 min</button>
+          <button class="interval-btn" data-v="300" onclick="selectInterval(300)">5 min</button>
+        </div>
+        <div class="s-btn-row">
+          <button class="s-btn s-btn-pri" onclick="saveDisplay()">Save</button>
+          <div id="display-status" class="s-status"></div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+</div>
+
+<script>
+  // ─── State ───────────────────────────────────────
+  let allHistory = [];
+  let currentRange = 180;
+  let compactMode = false;
+  let lastData = null;
+  let glucoseUnit = 'mgdl';  // 'mgdl' | 'mmol'
+
+  // ─── Unit conversion ─────────────────────────────
+  function fmtV(mgdl) {
+    if (glucoseUnit === 'mmol') return (mgdl / 18.0182).toFixed(1);
+    return String(mgdl);
+  }
+  function unitLabel() {
+    return glucoseUnit === 'mmol' ? 'mmol/L' : 'mg/dL';
+  }
+
+  // Color mapping
+  const STATUS_COLOR = {
+    very_low: '#dc2626',
+    low: '#d97706',
+    normal: '#16a34a',
+    high: '#d97706',
+    very_high: '#dc2626',
+  };
+
+  function glucoseColor(v) {
+    if (v < 55)  return '#dc2626';
+    if (v < 70)  return '#d97706';
+    if (v <= 180) return '#16a34a';
+    if (v <= 250) return '#d97706';
+    return '#dc2626';
+  }
+
+  // Trend arrow color: rising is red (differentiate fast/slight), others use glucose status color
+  function trendColor(desc, fallback) {
+    const d = (desc || '').toLowerCase();
+    if (d.includes('rising') && d.includes('quick')) return '#dc2626'; // Rising quickly
+    if (d === 'rising')                               return '#ef4444'; // Rising
+    if (d.includes('rising'))                         return '#f97316'; // Rising slightly
+    return fallback;
+  }
+
+  // Time axis tick interval (minutes)
+  const TICK_INTERVAL = { 30: 10, 180: 30, 360: 60, 1440: 240, 2880: 360 };
+
+  // ─── Bridge (macOS Python cgm:// or Electron IPC) ───────────────────────
+  const IS_ELECTRON = !!window.electronAPI;
+
+  function send(msg) {
+    if (IS_ELECTRON) {
+      window.electronAPI.send(msg);
+    } else {
+      fetch('cgm://' + encodeURIComponent(JSON.stringify(msg))).catch(() => {});
+    }
+  }
+
+  window.updateGlucose = function(data) {
+    lastData = data;
+    allHistory = data.history || [];
+    if (data.unit) glucoseUnit = data.unit;
+    renderAll();
+  };
+
+  // ─── Data filtering and statistics ───────────────────
+  function getFilteredHistory() {
+    const cutoff = Date.now() / 1000 - currentRange * 60;
+    return allHistory.filter(p => p.t >= cutoff);
+  }
+
+  function calcStats(history) {
+    if (!history.length) return { max: '--', min: '--', avg: '--' };
+    const vals = history.map(p => p.v);
+    return {
+      max: Math.max(...vals),
+      min: Math.min(...vals),
+      avg: Math.round(vals.reduce((a, b) => a + b) / vals.length),
+    };
+  }
+
+  // ─── Render main interface ───────────────────────────
+  function renderAll() {
+    if (!lastData) return;
+    const d = lastData;
+    const color = STATUS_COLOR[d.status] || '#16a34a';
+
+    // Top row
+    document.getElementById('glucose-value').textContent = d.value != null ? fmtV(d.value) : '--';
+    document.getElementById('glucose-value').style.color = color;
+    document.getElementById('trend-arrow').textContent = d.trend || '→';
+    document.getElementById('trend-arrow').style.color = trendColor(d.trend_desc, color);
+    document.getElementById('status-text').textContent = d.status_text || '';
+    document.getElementById('status-text').style.color = color;
+    document.getElementById('time-text').textContent = d.age_text || '';
+
+    // Stats
+    const history = getFilteredHistory();
+    const stats = calcStats(history);
+    ['max', 'min', 'avg'].forEach(k => {
+      const v = stats[k];
+      const c = typeof v === 'number' ? glucoseColor(v) : color;
+      const display = typeof v === 'number' ? fmtV(v) : v;
+      const el = document.getElementById('stat-' + k);
+      if (el) { el.textContent = display; el.style.color = c; }
+      const elC = document.getElementById('stat-' + k + '-c');
+      if (elC) { elC.textContent = display; elC.style.color = c; }
+    });
+
+    drawChart(history, color);
+    hoverHistory = history.slice(); // Save after drawChart sorts
+  }
+
+  // ─── Time range switching ────────────────────────────
+  function setRange(minutes) {
+    currentRange = minutes;
+
+    // Update active state for full-mode buttons
+    document.querySelectorAll('.range-btn[data-range]').forEach(btn => {
+      btn.classList.toggle('active', parseInt(btn.dataset.range) === minutes);
+    });
+
+    renderAll();
+  }
+
+  // ─── Compact mode toggle ─────────────────────────────
+  function toggleCompact() {
+    compactMode = !compactMode;
+    const chartSection = document.getElementById('chart-section');
+    const statsRow = document.getElementById('stats-row');
+    const rangeRow = document.getElementById('range-row');
+    const compactBottom = document.getElementById('compact-bottom');
+
+    if (compactMode) {
+      chartSection.style.display = 'none';
+      statsRow.style.display = 'none';
+      rangeRow.style.display = 'none';
+      compactBottom.style.display = 'flex';
+    } else {
+      chartSection.style.display = 'flex';
+      statsRow.style.display = 'flex';
+      rangeRow.style.display = 'flex';
+      compactBottom.style.display = 'none';
+    }
+
+    send({ action: 'set_compact', compact: compactMode });
+  }
+
+  // ─── Line chart ──────────────────────────────────────
+  function drawChart(history, lineColor) {
+    const canvas = document.getElementById('chart');
+    const wrap = document.getElementById('chart-wrap');
+    if (!wrap || wrap.offsetWidth === 0) return;
+
+    const dpr = window.devicePixelRatio || 1;
+    const w = wrap.offsetWidth;
+    const h = wrap.offsetHeight;
+
+    canvas.width = w * dpr;
+    canvas.height = h * dpr;
+    canvas.style.width = w + 'px';
+    canvas.style.height = h + 'px';
+
+    const ctx = canvas.getContext('2d');
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, w, h);
+
+    const AXIS_H = 16; // Time axis height
+    const Y_MIN = 40, Y_MAX = 300;
+    const PAD_L = 2, PAD_R = 4, PAD_T = 4, PAD_B = AXIS_H;
+    const cw = w - PAD_L - PAD_R;
+    const ch = h - PAD_T - PAD_B;
+
+    if (!history || history.length < 2) {
+      ctx.fillStyle = 'rgba(26,26,46,0.20)';
+      ctx.font = '11px -apple-system';
+      ctx.textAlign = 'center';
+      ctx.fillText('No data', w / 2, (h - AXIS_H) / 2);
+      return;
+    }
+
+    // Time range
+    const tNow = Date.now() / 1000;
+    const tMin = tNow - currentRange * 60;
+
+    function toX(t) { return PAD_L + ((t - tMin) / (tNow - tMin)) * cw; }
+    function toY(v) { return PAD_T + ch - ((v - Y_MIN) / (Y_MAX - Y_MIN)) * ch; }
+
+    // Background zones
+    const zones = [
+      { from: Y_MIN, to: 55,    color: 'rgba(220,38,38,0.08)' },
+      { from: 55,    to: 70,    color: 'rgba(217,119,6,0.08)' },
+      { from: 70,    to: 180,   color: 'rgba(22,163,74,0.06)' },
+      { from: 180,   to: 250,   color: 'rgba(217,119,6,0.08)' },
+      { from: 250,   to: Y_MAX, color: 'rgba(220,38,38,0.08)' },
+    ];
+    zones.forEach(z => {
+      ctx.fillStyle = z.color;
+      const y1 = toY(z.to), y2 = toY(z.from);
+      ctx.fillRect(PAD_L, y1, cw, y2 - y1);
+    });
+
+    // Reference lines 70 / 180 (gray) + 250 (red)
+    [70, 180].forEach(v => {
+      ctx.strokeStyle = 'rgba(26,26,46,0.12)';
+      ctx.lineWidth = 0.5;
+      ctx.setLineDash([3, 3]);
+      ctx.beginPath();
+      ctx.moveTo(PAD_L, toY(v));
+      ctx.lineTo(PAD_L + cw, toY(v));
+      ctx.stroke();
+    });
+    // 250 red reference line (only when within visible range)
+    if (250 < Y_MAX) {
+      ctx.strokeStyle = 'rgba(220,38,38,0.35)';
+      ctx.lineWidth = 0.5;
+      ctx.setLineDash([3, 3]);
+      ctx.beginPath();
+      ctx.moveTo(PAD_L, toY(250));
+      ctx.lineTo(PAD_L + cw, toY(250));
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+
+    // Sort by time ascending (Dexcom returns in reverse order)
+    history.sort((a, b) => a.t - b.t);
+
+    // Line segments: each segment colored by glucose value, break line if gap exceeds 15 minutes
+    ctx.lineWidth = 1.8;
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    history.forEach((pt, i) => {
+      if (i === 0) return;
+      const prev = history[i - 1];
+      if ((pt.t - prev.t) > 15 * 60) return; // Break line
+      const midV = (pt.v + prev.v) / 2;
+      ctx.strokeStyle = glucoseColor(midV);
+      ctx.beginPath();
+      ctx.moveTo(toX(prev.t), toY(prev.v));
+      ctx.lineTo(toX(pt.t), toY(pt.v));
+      ctx.stroke();
+    });
+
+    // Latest point (last after sorting = most recent)
+    const last = history[history.length - 1];
+    const lx = toX(last.t), ly = toY(last.v);
+    ctx.beginPath();
+    ctx.arc(lx, ly, 3.5, 0, Math.PI * 2);
+    ctx.fillStyle = glucoseColor(last.v);
+    ctx.fill();
+
+    // Y-axis labels
+    ctx.font = 'bold 9px -apple-system';
+    ctx.textAlign = 'left';
+    [70, 180].forEach(v => {
+      ctx.fillStyle = 'rgba(26,26,46,0.55)';
+      ctx.fillText(fmtV(v), PAD_L + 2, toY(v) - 2);
+    });
+    // 250 red label
+    if (250 < Y_MAX) {
+      ctx.fillStyle = 'rgba(220,38,38,0.70)';
+      ctx.fillText(fmtV(250), PAD_L + 2, toY(250) - 2);
+    }
+
+    // Time axis bottom separator line
+    ctx.strokeStyle = 'rgba(26,26,46,0.12)';
+    ctx.lineWidth = 0.5;
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    ctx.moveTo(PAD_L, PAD_T + ch);
+    ctx.lineTo(PAD_L + cw, PAD_T + ch);
+    ctx.stroke();
+
+    // Time axis
+    const tickMins = TICK_INTERVAL[currentRange] || 30;
+    const tickSec = tickMins * 60;
+    ctx.fillStyle = 'rgba(26,26,46,0.55)';
+    ctx.font = '9px -apple-system';
+    ctx.textAlign = 'center';
+
+    const firstTick = Math.ceil(tMin / tickSec) * tickSec;
+    for (let t = firstTick; t <= tNow + 1; t += tickSec) {
+      const x = toX(t);
+      if (x < PAD_L || x > PAD_L + cw) continue;
+      const d = new Date(t * 1000);
+      const label = d.getHours().toString().padStart(2, '0') + ':' + d.getMinutes().toString().padStart(2, '0');
+      // Tick mark
+      ctx.strokeStyle = 'rgba(26,26,46,0.15)';
+      ctx.lineWidth = 0.5;
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.moveTo(x, PAD_T + ch);
+      ctx.lineTo(x, PAD_T + ch + 4);
+      ctx.stroke();
+      // Time label
+      ctx.fillText(label, x, h - 2);
+    }
+  }
+
+  // ─── Button events ───────────────────────────────────
+  function onRefreshClick() {
+    const btn = document.getElementById('btn-refresh');
+    btn.classList.add('spinning');
+    setTimeout(() => btn.classList.remove('spinning'), 2000);
+    send({ action: 'force_refresh' });
+  }
+
+  // ─── Initialization ──────────────────────────────────
+  window.addEventListener('resize', () => {
+    if (lastData) renderAll();
+  });
+
+  // ─── Chart mouse hover ───────────────────────────────
+  let hoverHistory = [];
+
+  function onChartMouseMove(e) {
+    if (!hoverHistory.length) return;
+    const wrap = document.getElementById('chart-wrap');
+    const rect = wrap.getBoundingClientRect();
+    const mouseX = e.clientX - rect.left;
+    const w = rect.width;
+
+    const AXIS_H = 16, PAD_L = 2, PAD_R = 4;
+    const cw = w - PAD_L - PAD_R;
+    const tNow = Date.now() / 1000;
+    const tMin = tNow - currentRange * 60;
+
+    // Find closest data point
+    let closest = null, minDist = Infinity;
+    hoverHistory.forEach(pt => {
+      const px = PAD_L + ((pt.t - tMin) / (tNow - tMin)) * cw;
+      const d = Math.abs(mouseX - px);
+      if (d < minDist) { minDist = d; closest = pt; }
+    });
+    if (!closest || minDist > 20) { onChartMouseLeave(); return; }
+
+    const px = PAD_L + ((closest.t - tMin) / (tNow - tMin)) * cw;
+    const d = new Date(closest.t * 1000);
+    const timeStr = d.getHours().toString().padStart(2,'0') + ':' + d.getMinutes().toString().padStart(2,'0');
+
+    // Redraw and overlay crosshair
+    drawChartWithCrosshair(hoverHistory, lastData ? (STATUS_COLOR[lastData.status] || '#16a34a') : '#16a34a', px);
+
+    // Tooltip
+    const tip = document.getElementById('chart-tooltip');
+    tip.textContent = fmtV(closest.v) + ' ' + unitLabel() + '  ' + timeStr;
+    tip.style.display = 'block';
+    const tipLeft = Math.max(30, Math.min(px, w - 30));
+    tip.style.left = tipLeft + 'px';
+  }
+
+  function onChartMouseLeave() {
+    document.getElementById('chart-tooltip').style.display = 'none';
+    if (lastData) {
+      const history = getFilteredHistory();
+      drawChart(history, lastData ? (STATUS_COLOR[lastData.status] || '#16a34a') : '#16a34a');
+    }
+  }
+
+  function drawChartWithCrosshair(history, lineColor, crossX) {
+    drawChart(history, lineColor);
+    if (crossX == null) return;
+    const canvas = document.getElementById('chart');
+    const wrap = document.getElementById('chart-wrap');
+    const h = wrap.offsetHeight;
+    const AXIS_H = 16, PAD_T = 4;
+    const ch = h - PAD_T - AXIS_H;
+    const ctx = canvas.getContext('2d');
+    // drawChart already called scale(dpr,dpr), ctx coordinates are in CSS pixels, use crossX directly
+    ctx.save();
+    ctx.strokeStyle = 'rgba(26,26,46,0.40)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath();
+    ctx.moveTo(crossX, PAD_T);
+    ctx.lineTo(crossX, PAD_T + ch);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // Auto-update age text every 30 seconds ("X min ago")
+  function tickAgeText() {
+    if (!lastData || !lastData.timestamp) return;
+    const mins = Math.floor((Date.now() / 1000 - lastData.timestamp) / 60);
+    let text;
+    if (mins < 1) text = 'just now';
+    else if (mins === 1) text = '1 min ago';
+    else text = mins + ' min ago';
+    document.getElementById('time-text').textContent = text;
+  }
+  setInterval(tickAgeText, 30000);
+
+  // ─── Drag (Y-axis only) ────────────────────────────────────────────────────
+  let _dragging = false;
+  let _dragStartY = 0;
+
+  document.getElementById('top-row').addEventListener('mousedown', function(e) {
+    if (e.target.closest('#icon-btns')) return;
+    if (IS_ELECTRON) {
+      _dragging = true;
+      _dragStartY = e.screenY;
+      window.electronAPI.dragStart(e.screenY);
+      e.preventDefault();
+    } else {
+      send({ action: 'initiate_drag' });
+    }
+  });
+
+  document.addEventListener('mousemove', function(e) {
+    if (!_dragging || !IS_ELECTRON) return;
+    window.electronAPI.dragMove(e.screenY);
+  });
+
+  document.addEventListener('mouseup', function() { _dragging = false; });
+
+  // ─── Hover mode mouse enter/leave ─────────────────────────────────────────
+  document.addEventListener('mouseenter', () => send({ action: 'window_mouse_enter' }));
+  document.addEventListener('mouseleave', () => send({ action: 'window_mouse_leave' }));
+
+  // Page ready, notify to replay latest data
+  window.addEventListener('load', () => {
+    send({ action: 'page_ready' });
+  });
+
+  // ─── Electron IPC receive ────────────────────────────────────────────────
+  if (IS_ELECTRON) {
+    window.electronAPI.on('update_glucose',  window.updateGlucose);
+    window.electronAPI.on('show_settings',   window.showSettings);
+    window.electronAPI.on('settings_result', window.settingsResult);
+    window.electronAPI.on('do_collapse',     () => window.startCollapseAnimation?.());
+    window.electronAPI.on('do_expand',       () => window.startExpandAnimation?.());
+  }
+
+  // ─── Settings ────────────────────────────────────────
+  let settingsInterval = 120;
+  let settingsMode = 'window';
+  let settingsUnit = 'mgdl';
+
+  window.showSettings = function(config) {
+    if (config.username) document.getElementById('s-username').value = config.username;
+    const pwEl = document.getElementById('s-password');
+    pwEl.value = config.password || '';
+    pwEl.placeholder = 'Password';
+    document.getElementById('s-ous').checked = !!config.ous;
+    settingsInterval = config.interval || 120;
+    document.querySelectorAll('.interval-btn[data-v]').forEach(btn => {
+      btn.classList.toggle('active', parseInt(btn.dataset.v) === settingsInterval);
+    });
+    settingsMode = config.display_mode || 'window';
+    document.querySelectorAll('.interval-btn[data-mode]').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.mode === settingsMode);
+    });
+    settingsUnit = config.unit || 'mgdl';
+    glucoseUnit = settingsUnit;
+    document.querySelectorAll('.interval-btn[data-unit]').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.unit === settingsUnit);
+    });
+    setStatus('dexcom-status', '', '');
+    setStatus('display-status', '', '');
+    document.getElementById('settings-overlay').classList.add('visible');
+    send({ action: 'settings_open' });
+  };
+
+  function closeSettings() {
+    document.getElementById('settings-overlay').classList.remove('visible');
+    send({ action: 'settings_close' });
+  }
+
+  function selectMode(m) {
+    settingsMode = m;
+    document.querySelectorAll('.interval-btn[data-mode]').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.mode === m);
+    });
+  }
+
+  function setStatus(id, type, msg) {
+    const el = document.getElementById(id);
+    el.className = 's-status' + (type ? ' ' + type : '');
+    el.textContent = msg;
+  }
+
+  function testDexcom() {
+    const username = document.getElementById('s-username').value.trim();
+    const password = document.getElementById('s-password').value;
+    const ous = document.getElementById('s-ous').checked;
+    setStatus('dexcom-status', '', 'Testing...');
+    send({ action: 'test_dexcom', username, password, ous });
+  }
+
+  function saveDexcom() {
+    const username = document.getElementById('s-username').value.trim();
+    const password = document.getElementById('s-password').value;
+    const ous = document.getElementById('s-ous').checked;
+    setStatus('dexcom-status', '', 'Logging in...');
+    send({ action: 'save_dexcom', username, password, ous });
+  }
+
+  function selectUnit(u) {
+    settingsUnit = u;
+    document.querySelectorAll('.interval-btn[data-unit]').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.unit === u);
+    });
+  }
+
+  function selectInterval(v) {
+    settingsInterval = v;
+    document.querySelectorAll('.interval-btn[data-v]').forEach(btn => {
+      btn.classList.toggle('active', parseInt(btn.dataset.v) === v);
+    });
+  }
+
+  function saveDisplay() {
+    send({ action: 'save_display', interval: settingsInterval, display_mode: settingsMode, unit: settingsUnit });
+  }
+
+  // ─── Expand / Collapse animation ─────────────────────
+  window.startExpandAnimation = function() {
+    const app = document.getElementById('app');
+    app.classList.remove('anim-collapse');
+    void app.offsetWidth; // force reflow
+    app.classList.add('anim-expand');
+    app.addEventListener('animationend', function h(e) {
+      if (e.animationName === 'expandIn') {
+        app.removeEventListener('animationend', h);
+        app.classList.remove('anim-expand');
+      }
+    });
+  };
+
+  window.startCollapseAnimation = function() {
+    const app = document.getElementById('app');
+    app.classList.remove('anim-expand');
+    void app.offsetWidth;
+    app.classList.add('anim-collapse');
+    app.addEventListener('animationend', function h(e) {
+      if (e.animationName === 'collapseOut') {
+        app.removeEventListener('animationend', h);
+        app.classList.remove('anim-collapse');
+        send({ action: 'collapse_done' });
+      }
+    });
+  };
+
+  window.cancelAnimation = function() {
+    document.getElementById('app').classList.remove('anim-expand', 'anim-collapse');
+  };
+
+  window.settingsResult = function(result) {
+    const ok = result.success;
+    const msg = result.message || '';
+    switch (result.type) {
+      case 'test_dexcom':
+        setStatus('dexcom-status', ok ? 'ok' : 'err', ok ? '✓ ' + msg : '✗ ' + msg);
+        break;
+      case 'save_dexcom':
+        if (ok) {
+          setStatus('dexcom-status', 'ok', '✓ Logged in');
+          setTimeout(closeSettings, 700);
+        } else {
+          setStatus('dexcom-status', 'err', '✗ ' + msg);
+        }
+        break;
+      case 'save_display':
+        setStatus('display-status', ok ? 'ok' : 'err', ok ? '✓' : '✗');
+        if (ok) { glucoseUnit = settingsUnit; renderAll(); }
+        break;
+    }
+  };
+</script>
+</body>
+</html>

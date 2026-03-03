@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html, body {
+    width: 360px;
+    height: 380px;
+    overflow: hidden;
+    background: transparent;
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  #app {
+    width: 360px;
+    height: 380px;
+    background: rgba(22, 22, 26, 0.97);
+    border-radius: 12px;
+    border: 1px solid rgba(255,255,255,0.08);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    color: #fff;
+  }
+
+  /* Title bar (draggable) */
+  #titlebar {
+    height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 16px;
+    border-bottom: 1px solid rgba(255,255,255,0.07);
+    -webkit-app-region: drag;
+    flex-shrink: 0;
+  }
+
+  #titlebar h2 {
+    font-size: 14px;
+    font-weight: 600;
+    color: rgba(255,255,255,0.85);
+  }
+
+  #close-btn {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    border: none;
+    background: rgba(255,255,255,0.1);
+    color: rgba(255,255,255,0.5);
+    font-size: 13px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    -webkit-app-region: no-drag;
+  }
+  #close-btn:hover { background: rgba(255,80,80,0.4); color: #fff; }
+
+  /* Scrollable content area */
+  #content {
+    flex: 1;
+    overflow-y: auto;
+    padding: 12px 16px 16px;
+    -webkit-app-region: no-drag;
+  }
+
+  #content::-webkit-scrollbar { width: 4px; }
+  #content::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 2px; }
+
+  /* Section */
+  .section {
+    margin-bottom: 18px;
+  }
+
+  .section-title {
+    font-size: 11px;
+    font-weight: 600;
+    color: rgba(255,255,255,0.35);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 10px;
+  }
+
+  .field {
+    margin-bottom: 10px;
+  }
+
+  label {
+    display: block;
+    font-size: 12px;
+    color: rgba(255,255,255,0.5);
+    margin-bottom: 4px;
+  }
+
+  input[type="text"],
+  input[type="password"],
+  select {
+    width: 100%;
+    height: 32px;
+    border-radius: 7px;
+    border: 1px solid rgba(255,255,255,0.12);
+    background: rgba(255,255,255,0.06);
+    color: #fff;
+    font-size: 13px;
+    padding: 0 10px;
+    outline: none;
+    -webkit-app-region: no-drag;
+  }
+
+  input:focus, select:focus {
+    border-color: rgba(255,255,255,0.25);
+    background: rgba(255,255,255,0.09);
+  }
+
+  /* Region radio buttons */
+  .radio-row {
+    display: flex;
+    gap: 14px;
+    margin-top: 2px;
+  }
+
+  .radio-row label {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 13px;
+    color: rgba(255,255,255,0.7);
+    cursor: pointer;
+    margin-bottom: 0;
+  }
+
+  /* Button row */
+  .btn-row {
+    display: flex;
+    gap: 8px;
+    margin-top: 10px;
+  }
+
+  .btn {
+    height: 30px;
+    padding: 0 14px;
+    border-radius: 7px;
+    border: 1px solid rgba(255,255,255,0.12);
+    background: rgba(255,255,255,0.07);
+    color: rgba(255,255,255,0.75);
+    font-size: 12.5px;
+    cursor: pointer;
+    transition: background 0.15s;
+    -webkit-app-region: no-drag;
+  }
+
+  .btn:hover { background: rgba(255,255,255,0.13); color: #fff; }
+  .btn.primary {
+    background: rgba(46,204,113,0.2);
+    border-color: rgba(46,204,113,0.3);
+    color: #2ECC71;
+  }
+  .btn.primary:hover { background: rgba(46,204,113,0.3); }
+
+  /* Status messages */
+  .status-msg {
+    font-size: 12px;
+    margin-top: 6px;
+    min-height: 16px;
+    padding: 0 2px;
+  }
+  .status-msg.ok { color: #2ECC71; }
+  .status-msg.err { color: #E74C3C; }
+  .status-msg.info { color: rgba(255,255,255,0.45); }
+
+  /* Hint text */
+  .hint {
+    font-size: 11.5px;
+    color: rgba(255,255,255,0.3);
+    margin-top: 4px;
+    line-height: 1.5;
+  }
+
+  .hint a { color: rgba(100,180,255,0.6); text-decoration: none; }
+
+  select option { background: #1e1e22; }
+
+  /* Divider */
+  .divider {
+    height: 1px;
+    background: rgba(255,255,255,0.06);
+    margin: 4px 0 14px;
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <!-- Title bar -->
+  <div id="titlebar">
+    <h2>⚙️ Settings</h2>
+    <button id="close-btn" onclick="closeWindow()">✕</button>
+  </div>
+
+  <!-- Content -->
+  <div id="content">
+
+    <!-- Dexcom Account -->
+    <div class="section">
+      <div class="section-title">Dexcom Account</div>
+
+      <div class="field">
+        <label>Username (email)</label>
+        <input type="text" id="dex-username" placeholder="your@email.com" autocomplete="off" spellcheck="false">
+      </div>
+
+      <div class="field">
+        <label>Password</label>
+        <input type="password" id="dex-password" placeholder="Dexcom password">
+      </div>
+
+      <div class="field">
+        <label>Region</label>
+        <div class="radio-row">
+          <label><input type="radio" name="region" value="us" checked> United States</label>
+          <label><input type="radio" name="region" value="ous"> International (non-US)</label>
+        </div>
+      </div>
+
+      <div class="btn-row">
+        <button class="btn" onclick="testDexcom()">Test Connection</button>
+        <button class="btn primary" onclick="saveDexcom()">Save</button>
+      </div>
+      <div id="dex-status" class="status-msg info"></div>
+    </div>
+
+    <div class="divider"></div>
+
+    <!-- Gemini API Key -->
+    <div class="section">
+      <div class="section-title">Gemini AI Analysis</div>
+
+      <div class="field">
+        <label>Gemini API Key</label>
+        <input type="password" id="gemini-key" placeholder="AIza..." autocomplete="off">
+      </div>
+      <p class="hint">Get for free: <a href="#" onclick="openAIStudio()">aistudio.google.com</a> → Get API Key</p>
+
+      <div class="btn-row">
+        <button class="btn" onclick="testGemini()">Test</button>
+        <button class="btn primary" onclick="saveGemini()">Save</button>
+      </div>
+      <div id="gemini-status" class="status-msg info"></div>
+    </div>
+
+    <div class="divider"></div>
+
+    <!-- Display Settings -->
+    <div class="section">
+      <div class="section-title">Display Settings</div>
+
+      <div class="field">
+        <label>Refresh Interval</label>
+        <select id="refresh-interval">
+          <option value="60">1 minute</option>
+          <option value="180">3 minutes</option>
+          <option value="300" selected>5 minutes</option>
+        </select>
+      </div>
+
+      <div class="btn-row">
+        <button class="btn primary" onclick="saveDisplay()">Save</button>
+      </div>
+      <div id="display-status" class="status-msg info"></div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+  function send(msg) {
+    fetch('cgm://' + encodeURIComponent(JSON.stringify(msg))).catch(() => {});
+  }
+
+  function closeWindow() {
+    send({ action: 'close' });
+  }
+
+  function openAIStudio() {
+    send({ action: 'open_url', url: 'https://aistudio.google.com' });
+  }
+
+  function testDexcom() {
+    const username = document.getElementById('dex-username').value.trim();
+    const password = document.getElementById('dex-password').value;
+    const ous = document.querySelector('input[name="region"]:checked').value === 'ous';
+    if (!username || !password) {
+      setStatus('dex-status', 'Please enter username and password', 'err');
+      return;
+    }
+    setStatus('dex-status', 'Connecting...', 'info');
+    send({ action: 'test_dexcom', username, password, ous });
+  }
+
+  function saveDexcom() {
+    const username = document.getElementById('dex-username').value.trim();
+    const password = document.getElementById('dex-password').value;
+    const ous = document.querySelector('input[name="region"]:checked').value === 'ous';
+    if (!username || !password) {
+      setStatus('dex-status', 'Please enter username and password', 'err');
+      return;
+    }
+    send({ action: 'save_dexcom', username, password, ous });
+  }
+
+  function testGemini() {
+    const key = document.getElementById('gemini-key').value.trim();
+    if (!key) {
+      setStatus('gemini-status', 'Please enter API key', 'err');
+      return;
+    }
+    setStatus('gemini-status', 'Verifying...', 'info');
+    send({ action: 'test_gemini', api_key: key });
+  }
+
+  function saveGemini() {
+    const key = document.getElementById('gemini-key').value.trim();
+    if (!key) {
+      setStatus('gemini-status', 'Please enter API key', 'err');
+      return;
+    }
+    send({ action: 'save_gemini', api_key: key });
+  }
+
+  function saveDisplay() {
+    const interval = parseInt(document.getElementById('refresh-interval').value);
+    send({ action: 'save_display', refresh_interval: interval });
+  }
+
+  // Python → JS callback
+  window.settingsCallback = function(result) {
+    const { action, success, message } = result;
+    if (action === 'test_dexcom' || action === 'save_dexcom') {
+      setStatus('dex-status', message, success ? 'ok' : 'err');
+    } else if (action === 'test_gemini' || action === 'save_gemini') {
+      setStatus('gemini-status', message, success ? 'ok' : 'err');
+    } else if (action === 'save_display') {
+      setStatus('display-status', message, success ? 'ok' : 'err');
+    } else if (action === 'load') {
+      if (result.dex_username) document.getElementById('dex-username').value = result.dex_username;
+      if (result.refresh_interval) {
+        document.getElementById('refresh-interval').value = String(result.refresh_interval);
+      }
+      if (result.region) {
+        const radio = document.querySelector(`input[name="region"][value="${result.region}"]`);
+        if (radio) radio.checked = true;
+      }
+    }
+  };
+
+  function setStatus(id, msg, type) {
+    const el = document.getElementById(id);
+    el.textContent = msg;
+    el.className = 'status-msg ' + type;
+  }
+
+  // Load saved config on page load
+  window.addEventListener('load', () => {
+    send({ action: 'load' });
+  });
+</script>
+</body>
+</html>

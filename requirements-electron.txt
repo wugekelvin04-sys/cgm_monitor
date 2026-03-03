@@ -1,0 +1,4 @@
+# Electron sidecar dependencies (cross-platform: Windows / macOS)
+pydexcom>=0.2.3
+keyring>=24.0.0
+truststore>=0.9.0   ; sys_platform == "darwin"

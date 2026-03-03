@@ -1,0 +1,40 @@
+{
+  "name": "cgm-monitor",
+  "version": "1.0.0",
+  "description": "CGM Blood Glucose Monitor",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build:mac": "electron-builder --mac",
+    "build:win": "electron-builder --win"
+  },
+  "build": {
+    "appId": "com.cgm.monitor",
+    "productName": "CGM Monitor",
+    "directories": { "output": "../dist" },
+    "files": [
+      "**/*",
+      "../ui/**/*",
+      "../bridge.py",
+      "../dexcom_client.py",
+      "../models.py",
+      "../constants.py",
+      "../local_store.py",
+      "../logger.py"
+    ],
+    "mac": {
+      "target": "dmg",
+      "category": "public.app-category.healthcare-fitness"
+    },
+    "win": {
+      "target": "nsis"
+    },
+    "extraResources": [
+      { "from": "../", "to": "python", "filter": ["*.py", "ui/**"] }
+    ]
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.0.0"
+  }
+}
