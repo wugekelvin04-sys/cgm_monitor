@@ -342,6 +342,11 @@ class HTMLFloatingWindow:
         js = f"window.showSettings({safe})"
         self._call_on_main(lambda: self._eval_js(js))
 
+    def compact_applied(self, compact: bool):
+        """Notify JS that window resize is done and it should apply compact CSS layout"""
+        js = f"typeof applyCompactLayout === 'function' && applyCompactLayout({str(compact).lower()})"
+        self._call_on_main(lambda: self._eval_js(js))
+
     def settings_result(self, result: dict):
         """Push operation result to JS"""
         safe = json.dumps(result)

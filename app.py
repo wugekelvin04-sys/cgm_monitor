@@ -400,6 +400,7 @@ class CGMApp(rumps.App):
             compact = body.get("compact", False)
             h = COMPACT_WINDOW_HEIGHT if compact else MAIN_WINDOW_HEIGHT
             self._html_window.resize(MAIN_WINDOW_WIDTH, h)
+            self._html_window.compact_applied(compact)
         elif action == "collapse_done":
             self._call_on_main(self._finish_collapse)
         elif action == "settings_open":
