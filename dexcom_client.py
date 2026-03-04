@@ -104,6 +104,36 @@ class CredentialManager:
         from constants import KEYRING_UNIT_KEY
         return keyring.get_password(KEYRING_SERVICE, KEYRING_UNIT_KEY)
 
+    def save_comparison(self, mode: str):
+        from constants import KEYRING_COMPARISON_KEY
+        keyring.set_password(KEYRING_SERVICE, KEYRING_COMPARISON_KEY, mode)
+
+    def load_comparison(self) -> Optional[str]:
+        from constants import KEYRING_COMPARISON_KEY
+        return keyring.get_password(KEYRING_SERVICE, KEYRING_COMPARISON_KEY)
+
+    def save_thresholds(self, low: int, high: int, alert: int, alert_enabled: bool):
+        from constants import KEYRING_THRESH_LOW, KEYRING_THRESH_HIGH, KEYRING_THRESH_ALERT, KEYRING_ALERT_ENABLED
+        keyring.set_password(KEYRING_SERVICE, KEYRING_THRESH_LOW,    str(low))
+        keyring.set_password(KEYRING_SERVICE, KEYRING_THRESH_HIGH,   str(high))
+        keyring.set_password(KEYRING_SERVICE, KEYRING_THRESH_ALERT,  str(alert))
+        keyring.set_password(KEYRING_SERVICE, KEYRING_ALERT_ENABLED, "1" if alert_enabled else "0")
+
+    def load_thresholds(self) -> Optional[tuple]:
+        """Returns (low, high, alert, alert_enabled) or None if not saved."""
+        from constants import (KEYRING_THRESH_LOW, KEYRING_THRESH_HIGH,
+                               KEYRING_THRESH_ALERT, KEYRING_ALERT_ENABLED,
+                               DEFAULT_THRESH_LOW, DEFAULT_THRESH_HIGH, DEFAULT_THRESH_ALERT)
+        try:
+            low   = int(keyring.get_password(KEYRING_SERVICE, KEYRING_THRESH_LOW)   or DEFAULT_THRESH_LOW)
+            high  = int(keyring.get_password(KEYRING_SERVICE, KEYRING_THRESH_HIGH)  or DEFAULT_THRESH_HIGH)
+            alert = int(keyring.get_password(KEYRING_SERVICE, KEYRING_THRESH_ALERT) or DEFAULT_THRESH_ALERT)
+            raw   = keyring.get_password(KEYRING_SERVICE, KEYRING_ALERT_ENABLED)
+            alert_enabled = (raw != "0")  # default True when not saved
+            return low, high, alert, alert_enabled
+        except Exception:
+            return None
+
 
 def _parse_reading(bg) -> Optional[GlucoseReading]:
     """Convert a pydexcom BG object to a GlucoseReading"""

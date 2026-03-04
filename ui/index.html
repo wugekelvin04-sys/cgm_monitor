@@ -77,6 +77,28 @@
     margin-top: 1px;
   }
 
+  /* High-glucose alert badge */
+  #alert-badge {
+    display: none;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: #dc2626;
+    color: #fff;
+    font-size: 12px;
+    font-weight: 800;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    animation: alertPulse 1.4s ease-in-out infinite;
+    cursor: default;
+  }
+  #alert-badge.active { display: flex; }
+  @keyframes alertPulse {
+    0%, 100% { opacity: 1;   transform: scale(1);    box-shadow: 0 0 0 0 rgba(220,38,38,0.5); }
+    50%       { opacity: 0.85; transform: scale(1.12); box-shadow: 0 0 0 4px rgba(220,38,38,0); }
+  }
+
   /* Top-right icon button group */
   #icon-btns {
     display: flex;
@@ -337,7 +359,39 @@
   .s-check-row input { -webkit-app-region: no-drag; cursor: pointer; }
   .s-check-row span { font-size: 11px; color: rgba(26,26,46,0.65); }
 
-  .s-btn-row { display: flex; gap: 5px; align-items: center; margin-bottom: 3px; }
+  .s-btn-row { display: flex; gap: 5px; align-items: center; margin-bottom: 3px; flex-wrap: wrap; }
+
+  .s-thresh-row {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    margin-bottom: 5px;
+    flex-wrap: wrap;
+  }
+  .s-thresh-label {
+    font-size: 11px;
+    color: rgba(26,26,46,0.55);
+    min-width: 34px;
+  }
+  .s-thresh-input {
+    width: 52px;
+    height: 23px;
+    border: 1px solid rgba(0,0,0,0.12);
+    border-radius: 6px;
+    background: rgba(255,255,255,0.85);
+    padding: 0 6px;
+    font-size: 11px;
+    color: #1a1a2e;
+    outline: none;
+    -webkit-app-region: no-drag;
+    user-select: text;
+    -webkit-user-select: text;
+  }
+  .s-thresh-input:focus { border-color: #0078ff; }
+  .s-thresh-sep {
+    font-size: 10px;
+    color: rgba(26,26,46,0.30);
+  }
 
   .s-btn {
     height: 23px;
@@ -416,6 +470,7 @@
   <div id="top-row">
     <div id="glucose-value">--</div>
     <div id="trend-arrow">→</div>
+    <div id="alert-badge" title="High glucose alert">!</div>
     <div id="top-meta">
       <span id="status-text">Waiting...</span>
       <span id="time-text"></span>
@@ -445,10 +500,12 @@
 
   <!-- Time range + compact button row -->
   <div id="range-row">
-    <button class="range-btn" data-range="30" onclick="setRange(30)">30m</button>
     <button class="range-btn active" data-range="180" onclick="setRange(180)">3h</button>
     <button class="range-btn" data-range="360" onclick="setRange(360)">6h</button>
     <button class="range-btn" data-range="1440" onclick="setRange(1440)">24h</button>
+    <button class="range-btn" data-range="2880" onclick="setRange(2880)">2d</button>
+    <button class="range-btn" data-range="7200" onclick="setRange(7200)">5d</button>
+    <button class="range-btn" data-range="10080" onclick="setRange(10080)">7d</button>
     <div id="range-spacer"></div>
     <button class="icon-btn" onclick="toggleCompact()" title="Brief" style="font-size:11px;">⊟</button>
   </div>
@@ -467,9 +524,9 @@
     <div class="stat-item"><span class="stat-icon">●</span><span class="stat-val" id="stat-avg-c">--</span></div>
     <div class="stat-item"><span class="stat-icon">▼</span><span class="stat-val" id="stat-min-c">--</span></div>
     <div style="flex:1"></div>
-    <button class="range-btn active" data-range="30" onclick="setRange(30)">30m</button>
     <button class="range-btn" data-range="180" onclick="setRange(180)">3h</button>
     <button class="range-btn" data-range="1440" onclick="setRange(1440)">24h</button>
+    <button class="range-btn" data-range="10080" onclick="setRange(10080)">7d</button>
     <button class="icon-btn" onclick="toggleCompact()" title="Expand" style="font-size:11px;">⊞</button>
   </div>
 
@@ -517,6 +574,28 @@
           <button class="interval-btn" data-v="120" onclick="selectInterval(120)">2 min</button>
           <button class="interval-btn" data-v="300" onclick="selectInterval(300)">5 min</button>
         </div>
+        <div class="s-label">Comparison Lines</div>
+        <div class="s-btn-row" style="margin-bottom:5px;">
+          <button class="interval-btn" data-cmp="off"  onclick="selectComparison('off')">Off</button>
+          <button class="interval-btn" data-cmp="day"  onclick="selectComparison('day')">Daily</button>
+          <button class="interval-btn" data-cmp="week" onclick="selectComparison('week')">Weekly</button>
+          <button class="interval-btn" data-cmp="both" onclick="selectComparison('both')">Both</button>
+        </div>
+        <div class="s-label">Thresholds (mg/dL)</div>
+        <div class="s-thresh-row">
+          <span class="s-thresh-label">Low</span>
+          <input type="text" inputmode="numeric" id="s-thresh-low" class="s-thresh-input" placeholder="70">
+          <span class="s-thresh-sep">·</span>
+          <span class="s-thresh-label">High</span>
+          <input type="text" inputmode="numeric" id="s-thresh-high" class="s-thresh-input" placeholder="180">
+          <span class="s-thresh-sep">·</span>
+          <span class="s-thresh-label">Alert</span>
+          <input type="text" inputmode="numeric" id="s-thresh-alert" class="s-thresh-input" placeholder="250">
+        </div>
+        <label class="s-check-row" style="margin-bottom:5px;">
+          <input type="checkbox" id="s-alert-enabled">
+          <span>Enable glucose alerts</span>
+        </label>
         <div class="s-btn-row">
           <button class="s-btn s-btn-pri" onclick="saveDisplay()">Save</button>
           <div id="display-status" class="s-status"></div>
@@ -532,9 +611,15 @@
   // ─── State ───────────────────────────────────────
   let allHistory = [];
   let currentRange = 180;
+  let currentComparison = 'off';  // 'off' | 'day' | 'week' | 'both'
   let compactMode = false;
   let lastData = null;
   let glucoseUnit = 'mgdl';  // 'mgdl' | 'mmol'
+  // Configurable thresholds (mg/dL, received from Python)
+  let threshLow   = 70;
+  let threshHigh  = 180;
+  let threshAlert = 250;
+  let alertEnabled = true;
 
   // ─── Unit conversion ─────────────────────────────
   function fmtV(mgdl) {
@@ -555,11 +640,11 @@
   };
 
   function glucoseColor(v) {
-    if (v < 55)  return '#dc2626';
-    if (v < 70)  return '#d97706';
-    if (v <= 180) return '#16a34a';
-    if (v <= 250) return '#d97706';
-    return '#dc2626';
+    if (v < 55)           return '#dc2626';  // dangerously low (fixed clinical threshold)
+    if (v < threshLow)    return '#d97706';  // low
+    if (v <= threshHigh)  return '#16a34a';  // normal
+    if (v <= threshAlert) return '#d97706';  // high
+    return '#dc2626';                         // very high
   }
 
   // Trend arrow color: rising is red (differentiate fast/slight), others use glucose status color
@@ -571,8 +656,8 @@
     return fallback;
   }
 
-  // Time axis tick interval (minutes)
-  const TICK_INTERVAL = { 30: 10, 180: 30, 360: 60, 1440: 240, 2880: 360 };
+  // Time axis tick interval (minutes) per range
+  const TICK_INTERVAL = { 180: 30, 360: 60, 1440: 240, 2880: 360, 7200: 1440, 10080: 1440 };
 
   // ─── Bridge (macOS Python cgm:// or Electron IPC) ───────────────────────
   const IS_ELECTRON = !!window.electronAPI;
@@ -588,7 +673,13 @@
   window.updateGlucose = function(data) {
     lastData = data;
     allHistory = data.history || [];
-    if (data.unit) glucoseUnit = data.unit;
+    if (data.unit)       glucoseUnit      = data.unit;
+    if (data.comparison) currentComparison = data.comparison;
+    if (data.thresh_low   !== undefined) threshLow    = data.thresh_low;
+    if (data.thresh_high  !== undefined) threshHigh   = data.thresh_high;
+    if (data.thresh_alert !== undefined) threshAlert  = data.thresh_alert;
+    if (data.alert_enabled !== undefined) alertEnabled = data.alert_enabled;
+    if (data.last_range   !== undefined) setRange(data.last_range, true);
     renderAll();
   };
 
@@ -612,7 +703,8 @@
   function renderAll() {
     if (!lastData) return;
     const d = lastData;
-    const color = STATUS_COLOR[d.status] || '#16a34a';
+    // Compute color from the current threshold variables so it updates immediately when thresholds change
+    const color = d.value != null ? glucoseColor(d.value) : '#16a34a';
 
     // Top row
     document.getElementById('glucose-value').textContent = d.value != null ? fmtV(d.value) : '--';
@@ -641,7 +733,7 @@
   }
 
   // ─── Time range switching ────────────────────────────
-  function setRange(minutes) {
+  function setRange(minutes, skipSave) {
     currentRange = minutes;
 
     // Update active state for full-mode buttons
@@ -649,6 +741,7 @@
       btn.classList.toggle('active', parseInt(btn.dataset.range) === minutes);
     });
 
+    if (!skipSave) send({ action: 'save_range', range: minutes });
     renderAll();
   }
 
@@ -718,22 +811,24 @@
     function toX(t) { return PAD_L + ((t - tMin) / (tNow - tMin)) * cw; }
     function toY(v) { return PAD_T + ch - ((v - Y_MIN) / (Y_MAX - Y_MIN)) * ch; }
 
-    // Background zones
+    // Background zones (use configurable thresholds)
     const zones = [
-      { from: Y_MIN, to: 55,    color: 'rgba(220,38,38,0.08)' },
-      { from: 55,    to: 70,    color: 'rgba(217,119,6,0.08)' },
-      { from: 70,    to: 180,   color: 'rgba(22,163,74,0.06)' },
-      { from: 180,   to: 250,   color: 'rgba(217,119,6,0.08)' },
-      { from: 250,   to: Y_MAX, color: 'rgba(220,38,38,0.08)' },
+      { from: Y_MIN,      to: 55,          color: 'rgba(220,38,38,0.08)' },
+      { from: 55,         to: threshLow,   color: 'rgba(217,119,6,0.08)' },
+      { from: threshLow,  to: threshHigh,  color: 'rgba(22,163,74,0.06)' },
+      { from: threshHigh, to: threshAlert, color: 'rgba(217,119,6,0.08)' },
+      { from: threshAlert,to: Y_MAX,       color: 'rgba(220,38,38,0.08)' },
     ];
     zones.forEach(z => {
+      if (z.from >= z.to) return;
       ctx.fillStyle = z.color;
       const y1 = toY(z.to), y2 = toY(z.from);
       ctx.fillRect(PAD_L, y1, cw, y2 - y1);
     });
 
-    // Reference lines 70 / 180 (gray) + 250 (red)
-    [70, 180].forEach(v => {
+    // Reference lines: threshLow / threshHigh (gray dashed) + threshAlert (red dashed)
+    [threshLow, threshHigh].forEach(v => {
+      if (v <= Y_MIN || v >= Y_MAX) return;
       ctx.strokeStyle = 'rgba(26,26,46,0.12)';
       ctx.lineWidth = 0.5;
       ctx.setLineDash([3, 3]);
@@ -742,22 +837,29 @@
       ctx.lineTo(PAD_L + cw, toY(v));
       ctx.stroke();
     });
-    // 250 red reference line (only when within visible range)
-    if (250 < Y_MAX) {
+    if (threshAlert > Y_MIN && threshAlert < Y_MAX) {
       ctx.strokeStyle = 'rgba(220,38,38,0.35)';
       ctx.lineWidth = 0.5;
       ctx.setLineDash([3, 3]);
       ctx.beginPath();
-      ctx.moveTo(PAD_L, toY(250));
-      ctx.lineTo(PAD_L + cw, toY(250));
+      ctx.moveTo(PAD_L, toY(threshAlert));
+      ctx.lineTo(PAD_L + cw, toY(threshAlert));
       ctx.stroke();
     }
     ctx.setLineDash([]);
 
+    // Comparison lines (drawn before main line, so main line is on top)
+    if (currentComparison === 'day' || currentComparison === 'both') {
+      drawComparisonLine(ctx, toX, toY, 86400, 'rgba(59,130,246,0.45)');   // 1d ago — blue dashed
+    }
+    if (currentComparison === 'week' || currentComparison === 'both') {
+      drawComparisonLine(ctx, toX, toY, 604800, 'rgba(168,85,247,0.45)');  // 7d ago — purple dashed
+    }
+
     // Sort by time ascending (Dexcom returns in reverse order)
     history.sort((a, b) => a.t - b.t);
 
-    // Line segments: each segment colored by glucose value, break line if gap exceeds 15 minutes
+    // Main line segments: each segment colored by glucose value, break line if gap exceeds 15 minutes
     ctx.lineWidth = 1.8;
     ctx.lineJoin = 'round';
     ctx.lineCap = 'round';
@@ -781,17 +883,17 @@
     ctx.fillStyle = glucoseColor(last.v);
     ctx.fill();
 
-    // Y-axis labels
+    // Y-axis labels (use configurable thresholds)
     ctx.font = 'bold 9px -apple-system';
     ctx.textAlign = 'left';
-    [70, 180].forEach(v => {
+    [threshLow, threshHigh].forEach(v => {
+      if (v <= Y_MIN || v >= Y_MAX) return;
       ctx.fillStyle = 'rgba(26,26,46,0.55)';
       ctx.fillText(fmtV(v), PAD_L + 2, toY(v) - 2);
     });
-    // 250 red label
-    if (250 < Y_MAX) {
+    if (threshAlert > Y_MIN && threshAlert < Y_MAX) {
       ctx.fillStyle = 'rgba(220,38,38,0.70)';
-      ctx.fillText(fmtV(250), PAD_L + 2, toY(250) - 2);
+      ctx.fillText(fmtV(threshAlert), PAD_L + 2, toY(threshAlert) - 2);
     }
 
     // Time axis bottom separator line
@@ -815,7 +917,19 @@
       const x = toX(t);
       if (x < PAD_L || x > PAD_L + cw) continue;
       const d = new Date(t * 1000);
-      const label = d.getHours().toString().padStart(2, '0') + ':' + d.getMinutes().toString().padStart(2, '0');
+      let label;
+      if (currentRange <= 1440) {
+        // Within 24h: show HH:MM
+        label = d.getHours().toString().padStart(2, '0') + ':' + d.getMinutes().toString().padStart(2, '0');
+      } else if (currentRange <= 2880) {
+        // 2d: midnight shows M/D, other ticks show HH:00
+        label = d.getHours() === 0
+          ? (d.getMonth() + 1) + '/' + d.getDate()
+          : d.getHours().toString().padStart(2, '0') + ':00';
+      } else {
+        // 5d/7d: show M/D at each daily tick
+        label = (d.getMonth() + 1) + '/' + d.getDate();
+      }
       // Tick mark
       ctx.strokeStyle = 'rgba(26,26,46,0.15)';
       ctx.lineWidth = 0.5;
@@ -827,6 +941,37 @@
       // Time label
       ctx.fillText(label, x, h - 2);
     }
+  }
+
+  // ─── Comparison line helpers ──────────────────────────────
+  function getComparisonHistory(offsetSec) {
+    const tNow = Date.now() / 1000;
+    const tMin = tNow - currentRange * 60;
+    // Fetch data from [tMin-offsetSec, tNow-offsetSec] and shift forward by offsetSec to overlay
+    return allHistory
+      .filter(p => p.t >= tMin - offsetSec && p.t <= tNow - offsetSec)
+      .map(p => ({ t: p.t + offsetSec, v: p.v }));
+  }
+
+  function drawComparisonLine(ctx, toX, toY, offsetSec, color) {
+    const cmpHistory = getComparisonHistory(offsetSec);
+    if (cmpHistory.length < 2) return;
+    cmpHistory.sort((a, b) => a.t - b.t);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.2;
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    ctx.setLineDash([5, 4]);
+    cmpHistory.forEach((pt, i) => {
+      if (i === 0) return;
+      const prev = cmpHistory[i - 1];
+      if ((pt.t - prev.t) > 15 * 60) return; // Break line on gap
+      ctx.beginPath();
+      ctx.moveTo(toX(prev.t), toY(prev.v));
+      ctx.lineTo(toX(pt.t), toY(pt.v));
+      ctx.stroke();
+    });
+    ctx.setLineDash([]);
   }
 
   // ─── Button events ───────────────────────────────────
@@ -871,7 +1016,7 @@
     const timeStr = d.getHours().toString().padStart(2,'0') + ':' + d.getMinutes().toString().padStart(2,'0');
 
     // Redraw and overlay crosshair
-    drawChartWithCrosshair(hoverHistory, lastData ? (STATUS_COLOR[lastData.status] || '#16a34a') : '#16a34a', px);
+    drawChartWithCrosshair(hoverHistory, lastData && lastData.value != null ? glucoseColor(lastData.value) : '#16a34a', px);
 
     // Tooltip
     const tip = document.getElementById('chart-tooltip');
@@ -885,7 +1030,7 @@
     document.getElementById('chart-tooltip').style.display = 'none';
     if (lastData) {
       const history = getFilteredHistory();
-      drawChart(history, lastData ? (STATUS_COLOR[lastData.status] || '#16a34a') : '#16a34a');
+      drawChart(history, lastData && lastData.value != null ? glucoseColor(lastData.value) : '#16a34a');
     }
   }
 
@@ -966,6 +1111,11 @@
   let settingsInterval = 120;
   let settingsMode = 'window';
   let settingsUnit = 'mgdl';
+  let settingsComparison = 'off';
+  let settingsThreshLow   = 70;
+  let settingsThreshHigh  = 180;
+  let settingsThreshAlert = 250;
+  let settingsAlertEnabled = true;
 
   window.showSettings = function(config) {
     if (config.username) document.getElementById('s-username').value = config.username;
@@ -986,6 +1136,18 @@
     document.querySelectorAll('.interval-btn[data-unit]').forEach(btn => {
       btn.classList.toggle('active', btn.dataset.unit === settingsUnit);
     });
+    settingsComparison = config.comparison || 'off';
+    document.querySelectorAll('.interval-btn[data-cmp]').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.cmp === settingsComparison);
+    });
+    settingsThreshLow   = config.thresh_low   ?? 70;
+    settingsThreshHigh  = config.thresh_high  ?? 180;
+    settingsThreshAlert = config.thresh_alert ?? 250;
+    settingsAlertEnabled = config.alert_enabled !== false;
+    document.getElementById('s-thresh-low').value   = settingsThreshLow;
+    document.getElementById('s-thresh-high').value  = settingsThreshHigh;
+    document.getElementById('s-thresh-alert').value = settingsThreshAlert;
+    document.getElementById('s-alert-enabled').checked = settingsAlertEnabled;
     setStatus('dexcom-status', '', '');
     setStatus('display-status', '', '');
     document.getElementById('settings-overlay').classList.add('visible');
@@ -1040,9 +1202,35 @@
     });
   }
 
-  function saveDisplay() {
-    send({ action: 'save_display', interval: settingsInterval, display_mode: settingsMode, unit: settingsUnit });
+  function selectComparison(c) {
+    settingsComparison = c;
+    document.querySelectorAll('.interval-btn[data-cmp]').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.cmp === c);
+    });
   }
+
+  function saveDisplay() {
+    function parseThresh(id, fallback) {
+      const n = parseInt(document.getElementById(id).value.replace(/[^0-9]/g, ''), 10);
+      return isNaN(n) ? fallback : n;
+    }
+    const tLow   = parseThresh('s-thresh-low',   settingsThreshLow);
+    const tHigh  = parseThresh('s-thresh-high',  settingsThreshHigh);
+    const tAlert = parseThresh('s-thresh-alert', settingsThreshAlert);
+    const aEnabled = document.getElementById('s-alert-enabled').checked;
+    send({
+      action: 'save_display',
+      interval: settingsInterval, display_mode: settingsMode, unit: settingsUnit,
+      comparison: settingsComparison,
+      thresh_low: tLow, thresh_high: tHigh, thresh_alert: tAlert,
+      alert_enabled: aEnabled,
+    });
+  }
+
+  // ─── High-glucose alert badge ────────────────────────
+  window.setAlert = function(active) {
+    document.getElementById('alert-badge').classList.toggle('active', !!active);
+  };
 
   // ─── Expand / Collapse animation ─────────────────────
   window.startExpandAnimation = function() {
@@ -1093,7 +1281,15 @@
         break;
       case 'save_display':
         setStatus('display-status', ok ? 'ok' : 'err', ok ? '✓' : '✗');
-        if (ok) { glucoseUnit = settingsUnit; renderAll(); }
+        if (ok) {
+          glucoseUnit = settingsUnit;
+          currentComparison = settingsComparison;
+          threshLow   = parseInt(document.getElementById('s-thresh-low').value,   10) || threshLow;
+          threshHigh  = parseInt(document.getElementById('s-thresh-high').value,  10) || threshHigh;
+          threshAlert = parseInt(document.getElementById('s-thresh-alert').value, 10) || threshAlert;
+          alertEnabled = document.getElementById('s-alert-enabled').checked;
+          renderAll();
+        }
         break;
     }
   };

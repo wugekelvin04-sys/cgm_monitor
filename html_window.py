@@ -14,10 +14,22 @@ from Foundation import NSURLResponse, NSData
 from WebKit import WKWebView, WKWebViewConfiguration
 
 
+def _screen_containing_point(pt):
+    """Return the NSScreen whose frame contains pt, falling back to mainScreen."""
+    for s in NSScreen.screens():
+        f = s.frame()
+        if (f.origin.x <= pt.x < f.origin.x + f.size.width and
+                f.origin.y <= pt.y < f.origin.y + f.size.height):
+            return s
+    return NSScreen.mainScreen()
+
+
 class _DraggableWKWebView(WKWebView):
-    """WKWebView subclass: supports Y-axis-only window dragging triggered from the title bar"""
+    """WKWebView subclass: supports free window dragging triggered from the title bar"""
     _title_drag_active = False
+    _drag_start_screen_x = 0.0
     _drag_start_screen_y = 0.0
+    _drag_start_window_x = 0.0
     _drag_start_window_y = 0.0
 
     def mouseDown_(self, event):
@@ -26,7 +38,7 @@ class _DraggableWKWebView(WKWebView):
 
     def mouseDragged_(self, event):
         if self._title_drag_active:
-            self._do_y_drag()
+            self._do_drag()
         else:
             objc.super(_DraggableWKWebView, self).mouseDragged_(event)
 
@@ -34,24 +46,32 @@ class _DraggableWKWebView(WKWebView):
         self._title_drag_active = False
         objc.super(_DraggableWKWebView, self).mouseUp_(event)
 
-    def _do_y_drag(self):
+    def _do_drag(self):
         if not self.window():
             return
-        dy = NSEvent.mouseLocation().y - self._drag_start_screen_y
+        loc = NSEvent.mouseLocation()
+        dx = loc.x - self._drag_start_screen_x
+        dy = loc.y - self._drag_start_screen_y
+        new_x = self._drag_start_window_x + dx
         new_y = self._drag_start_window_y + dy
-        screen = NSScreen.mainScreen()
+        # Clamp to whichever screen the cursor is currently on (multi-monitor support)
+        screen = _screen_containing_point(loc)
         if screen:
             sf = screen.frame()
             win = self.window()
+            win_w = win.frame().size.width
             win_h = win.frame().size.height
-            fixed_x = sf.origin.x + sf.size.width - MAIN_WINDOW_WIDTH - 20
+            new_x = max(sf.origin.x, min(new_x, sf.origin.x + sf.size.width - win_w))
             new_y = max(sf.origin.y, min(new_y, sf.origin.y + sf.size.height - win_h))
-            win.setFrameOrigin_(NSPoint(fixed_x, new_y))
+        self.window().setFrameOrigin_(NSPoint(new_x, new_y))
 
     def initiateDrag_(self, _):
-        """JS-triggered: record start point, begin Y-axis-only drag"""
+        """JS-triggered: record start point, begin free drag"""
         if self.window():
-            self._drag_start_screen_y = NSEvent.mouseLocation().y
+            loc = NSEvent.mouseLocation()
+            self._drag_start_screen_x = loc.x
+            self._drag_start_screen_y = loc.y
+            self._drag_start_window_x = self.window().frame().origin.x
             self._drag_start_window_y = self.window().frame().origin.y
             self._title_drag_active = True
 
@@ -64,6 +84,7 @@ _NSTrackingInVisibleRect       = 0x200
 from models import GlucoseReading
 from constants import MAIN_WINDOW_WIDTH, MAIN_WINDOW_HEIGHT
 from logger import get_logger
+import ui_state
 
 log = get_logger("window")
 
@@ -143,25 +164,37 @@ class _MainSchemeHandler(objc.lookUpClass("NSObject")):
         pass
 
 
+class _FloatingPanel(objc.lookUpClass("NSPanel")):
+    """NSPanel subclass that can always become key window (required for WKWebView text input)."""
+    def canBecomeKeyWindow(self):
+        return True
+
+    def canBecomeMainWindow(self):
+        return False
+
+
 class _PanelDelegate(objc.lookUpClass("NSObject")):
-    """Window delegate: pin X to the right edge after the main window moves"""
+    """Window delegate for the main floating window"""
 
     def initWithPanel_(self, panel):
         self = objc.super(_PanelDelegate, self).init()
         if self is None:
             return None
         self._panel = panel
+        self._save_timer = None
         return self
 
     def windowDidMove_(self, notification):
-        frame = self._panel.frame()
-        screen = NSScreen.mainScreen()
-        if not screen:
-            return
-        sf = screen.frame()
-        fixed_x = sf.origin.x + sf.size.width - frame.size.width - 20
-        if frame.origin.x != fixed_x:
-            self._panel.setFrameOrigin_(NSPoint(fixed_x, frame.origin.y))
+        # Debounce: save position 0.4s after the last move event
+        if self._save_timer:
+            self._save_timer.cancel()
+        import threading
+        origin = self._panel.frame().origin
+        x, y = origin.x, origin.y
+        t = threading.Timer(0.4, lambda: ui_state.save_window_pos(x, y))
+        t.daemon = True
+        t.start()
+        self._save_timer = t
 
 
 class HTMLFloatingWindow:
@@ -213,9 +246,9 @@ class HTMLFloatingWindow:
         )
         webview.addTrackingArea_(tracking_area)
 
-        # NSPanel
+        # NSPanel (subclassed to ensure canBecomeKeyWindow = True for WKWebView text input)
         style = NSWindowStyleMaskBorderless
-        panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+        panel = _FloatingPanel.alloc().initWithContentRect_styleMask_backing_defer_(
             frame, style, NSBackingStoreBuffered, False
         )
         panel.setLevel_(NSFloatingWindowLevel)
@@ -227,7 +260,7 @@ class HTMLFloatingWindow:
         panel.setAcceptsMouseMovedEvents_(True)
         panel.setContentView_(webview)
 
-        # Delegate to pin window to the right edge
+        # Window delegate
         self._panel_delegate = _PanelDelegate.alloc().initWithPanel_(panel)
         panel.setDelegate_(self._panel_delegate)
 
@@ -238,7 +271,19 @@ class HTMLFloatingWindow:
         self._webview = webview
 
     def _position_window(self, panel):
-        """Position window at top-right corner of screen (below menu bar)"""
+        """Position window: restore last saved position if valid, else top-right corner."""
+        saved_x, saved_y = ui_state.load_window_pos()
+        if saved_x is not None:
+            # Verify the saved position is on a connected screen before restoring
+            pt = NSPoint(saved_x + MAIN_WINDOW_WIDTH / 2, saved_y + MAIN_WINDOW_HEIGHT / 2)
+            screen = _screen_containing_point(pt)
+            if screen:
+                sf = screen.frame()
+                cx = max(sf.origin.x, min(saved_x, sf.origin.x + sf.size.width - MAIN_WINDOW_WIDTH))
+                cy = max(sf.origin.y, min(saved_y, sf.origin.y + sf.size.height - MAIN_WINDOW_HEIGHT))
+                panel.setFrameOrigin_(NSPoint(cx, cy))
+                return
+        # Fallback: top-right corner of main screen
         screen = NSScreen.mainScreen()
         if screen:
             sf = screen.visibleFrame()
@@ -259,21 +304,22 @@ class HTMLFloatingWindow:
             self._panel.orderFront_(None)
 
     def show_at(self, x: float, y: float):
-        """Show window at specified position (auto-constrained to right half of screen)"""
+        """Show window at specified position (clamped to screen bounds)"""
         self._ensure_built()
         self._call_on_main(lambda: self._do_show_at(x, y))
 
     def _do_show_at(self, x: float, y: float):
         if not self._panel:
             return
-        screen = NSScreen.mainScreen()
+        # Find the screen containing the target position (multi-monitor support)
+        screen = _screen_containing_point(NSPoint(x, y))
         if screen:
             sf = screen.frame()
+            win_w = self._panel.frame().size.width
             win_h = self._panel.frame().size.height
-            # X is pinned to the right edge, ignoring the passed x
-            fixed_x = sf.origin.x + sf.size.width - MAIN_WINDOW_WIDTH - 20
+            cx = max(sf.origin.x, min(x, sf.origin.x + sf.size.width - win_w))
             cy = max(sf.origin.y, min(y, sf.origin.y + sf.size.height - win_h))
-            self._panel.setFrameOrigin_(NSPoint(fixed_x, cy))
+            self._panel.setFrameOrigin_(NSPoint(cx, cy))
         self._panel.orderFront_(None)
 
     def hide(self):
@@ -296,7 +342,7 @@ class HTMLFloatingWindow:
         if not self._panel:
             return
         frame = self._panel.frame()
-        # Keep top-right corner position fixed (top edge stays)
+        # Keep top edge position fixed when resizing height
         new_y = frame.origin.y + frame.size.height - height
         self._panel.setFrame_display_animate_(
             NSMakeRect(frame.origin.x, new_y, width, height), True, False
@@ -325,7 +371,11 @@ class HTMLFloatingWindow:
             return self._panel.frame()
         return None
 
-    def update_data(self, reading: GlucoseReading, history: List[GlucoseReading], unit: str = "mgdl"):
+    def update_data(self, reading: GlucoseReading, history: List[GlucoseReading],
+                    unit: str = "mgdl", comparison: str = "off",
+                    thresh_low: int = 70, thresh_high: int = 180,
+                    thresh_alert: int = 250, alert_enabled: bool = True,
+                    last_range: int = None):
         """Push glucose data to JS"""
         data = reading.to_dict()
         data["history"] = [
@@ -333,13 +383,37 @@ class HTMLFloatingWindow:
             for r in history
         ]
         data["unit"] = unit
+        data["comparison"] = comparison
+        data["thresh_low"]    = thresh_low
+        data["thresh_high"]   = thresh_high
+        data["thresh_alert"]  = thresh_alert
+        data["alert_enabled"] = alert_enabled
+        if last_range is not None:
+            data["last_range"] = last_range
         js = f"window.updateGlucose({json.dumps(data, ensure_ascii=False)})"
+        self._call_on_main(lambda: self._eval_js(js))
+
+    def set_alert(self, active: bool):
+        """Push high-glucose alert state to JS (shows/hides the red ! badge)"""
+        js = f"typeof window.setAlert === 'function' && window.setAlert({str(active).lower()})"
         self._call_on_main(lambda: self._eval_js(js))
 
     def show_settings(self, config: dict):
         """Push settings config to JS, show settings overlay"""
         safe = json.dumps(config)
         js = f"window.showSettings({safe})"
+        self._call_on_main(lambda: self._eval_js(js))
+        # Make window key and set WKWebView as first responder so inputs accept keyboard events
+        def _activate():
+            if self._panel:
+                self._panel.makeKeyAndOrderFront_(None)
+            if self._panel and self._webview:
+                self._panel.makeFirstResponder_(self._webview)
+        self._call_on_main(_activate)
+
+    def restore_range(self, minutes: int):
+        """Restore the last selected time range in JS (called on page_ready before first data)."""
+        js = f"typeof setRange==='function'&&setRange({int(minutes)},true)"
         self._call_on_main(lambda: self._eval_js(js))
 
     def compact_applied(self, compact: bool):

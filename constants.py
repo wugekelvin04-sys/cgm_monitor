@@ -56,3 +56,28 @@ HISTORY_MINUTES = 1440  # 24h
 
 # Maximum history data points (24h x 12 points/h = 288)
 HISTORY_MAX_POINTS = 288
+
+# Alert cooldown: minimum seconds between repeated notifications for the same alert type
+ALERT_COOLDOWN_SEC = 900  # 15 minutes
+
+# History loaded from local store for display (supports multi-day ranges + 7d comparison)
+DISPLAY_HISTORY_MINUTES = 20160  # 14 days
+
+# Comparison line modes
+COMPARISON_OFF  = "off"
+COMPARISON_DAY  = "day"
+COMPARISON_WEEK = "week"
+COMPARISON_BOTH = "both"
+
+KEYRING_COMPARISON_KEY = "comparison_mode"
+
+# Configurable glucose thresholds (stored in keyring, values in mg/dL)
+KEYRING_THRESH_LOW   = "thresh_low"
+KEYRING_THRESH_HIGH  = "thresh_high"
+KEYRING_THRESH_ALERT = "thresh_alert"
+KEYRING_ALERT_ENABLED = "alert_enabled"
+
+# Default threshold values (mg/dL)
+DEFAULT_THRESH_LOW   = 70
+DEFAULT_THRESH_HIGH  = 180
+DEFAULT_THRESH_ALERT = 250

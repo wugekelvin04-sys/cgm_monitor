@@ -1,4 +1,5 @@
 import threading
+import time
 import json
 from typing import Optional, List
 
@@ -6,18 +7,22 @@ import rumps
 
 from dexcom_client import DexcomClient
 from html_window import HTMLFloatingWindow
-from floating_ball import FloatingBall, BALL_W, BALL_H
+from floating_ball import FloatingBall, BALL_W, BALL_H, GLOW_PAD
 from models import GlucoseReading
 from constants import (REFRESH_INTERVAL_DEFAULT, COMPACT_WINDOW_HEIGHT, MAIN_WINDOW_HEIGHT, MAIN_WINDOW_WIDTH,
-                       DISPLAY_MODE_WINDOW, DISPLAY_MODE_HOVER, GLUCOSE_UNIT_MGDL, GLUCOSE_UNIT_MMOL)
+                       DISPLAY_MODE_WINDOW, DISPLAY_MODE_HOVER, GLUCOSE_UNIT_MGDL, GLUCOSE_UNIT_MMOL,
+                       COMPARISON_OFF, COMPARISON_DAY, COMPARISON_WEEK, COMPARISON_BOTH,
+                       DISPLAY_HISTORY_MINUTES, ALERT_COOLDOWN_SEC,
+                       DEFAULT_THRESH_LOW, DEFAULT_THRESH_HIGH, DEFAULT_THRESH_ALERT)
 from logger import get_logger
+import ui_state
 
 log = get_logger("app")
 
 
-# Glucose alert deduplication
-_last_alert_status: Optional[str] = None
-_last_alert_lock = threading.Lock()
+# Per-alert-type timestamp of last notification (for 15-min cooldown)
+_alert_last_notified: dict = {}
+_alert_lock = threading.Lock()
 
 
 class CGMApp(rumps.App):
@@ -33,9 +38,15 @@ class CGMApp(rumps.App):
         self._history: List[GlucoseReading] = []
         self._page_ready_event = threading.Event()
 
-        # Display mode / glucose unit / settings toggle / collapse timer
+        # Display mode / glucose unit / comparison / settings toggle / collapse timer
         self._display_mode = DISPLAY_MODE_WINDOW
         self._glucose_unit = GLUCOSE_UNIT_MGDL
+        self._comparison = COMPARISON_OFF
+        self._high_alert_active = False      # True while glucose > thresh_alert and alerts enabled
+        self._thresh_low   = DEFAULT_THRESH_LOW    # 70 mg/dL
+        self._thresh_high  = DEFAULT_THRESH_HIGH   # 180 mg/dL
+        self._thresh_alert = DEFAULT_THRESH_ALERT  # 250 mg/dL
+        self._alert_enabled = True
         self._settings_open = False
         self._collapse_timer: Optional[threading.Timer] = None
         self._pending_ball_frame = None  # Temporarily store window frame during collapse animation
@@ -97,6 +108,16 @@ class CGMApp(rumps.App):
         if saved_unit in (GLUCOSE_UNIT_MGDL, GLUCOSE_UNIT_MMOL):
             self._glucose_unit = saved_unit
             log.info(f"Glucose unit: {saved_unit}")
+
+        saved_comparison = self._dexcom.credentials.load_comparison()
+        if saved_comparison in (COMPARISON_OFF, COMPARISON_DAY, COMPARISON_WEEK, COMPARISON_BOTH):
+            self._comparison = saved_comparison
+            log.info(f"Comparison mode: {saved_comparison}")
+
+        saved_thresh = self._dexcom.credentials.load_thresholds()
+        if saved_thresh:
+            self._thresh_low, self._thresh_high, self._thresh_alert, self._alert_enabled = saved_thresh
+            log.info(f"Thresholds: low={self._thresh_low} high={self._thresh_high} alert={self._thresh_alert} enabled={self._alert_enabled}")
 
         self._html_window.show()
         # Wait for page ready (JS sets the event after page_ready is received)
@@ -160,7 +181,8 @@ class CGMApp(rumps.App):
                     return
             log.debug("Starting glucose data refresh")
             reading = self._dexcom.get_current_reading()
-            history = self._dexcom.get_history()
+            self._dexcom.get_history()  # API fetch + store upsert (1440 min)
+            history = self._dexcom.get_history_from_store(minutes=DISPLAY_HISTORY_MINUTES)
             if reading:
                 self._last_reading = reading
                 self._history = history
@@ -188,50 +210,74 @@ class CGMApp(rumps.App):
         val_str = self._fmt_glucose(reading.value)
         self.title = f" {val_str} {reading.trend_arrow}"
         self._menu_reading.title = f"{val_str} {self._unit_label()}  {reading.trend_description}"
-        self._html_window.update_data(reading, history, unit=self._glucose_unit)
+        self._html_window.update_data(
+            reading, history,
+            unit=self._glucose_unit, comparison=self._comparison,
+            thresh_low=self._thresh_low, thresh_high=self._thresh_high,
+            thresh_alert=self._thresh_alert, alert_enabled=self._alert_enabled,
+        )
         self._update_ball_display(reading)
 
     def _update_ball_display(self, reading: GlucoseReading):
-        """Update floating ball value, trend arc and color"""
+        """Update floating ball value, trend arc, color and alert state"""
         v = reading.value
-        if v < 55 or v > 250:
+        if v < 55 or v > self._thresh_alert:
             r, g, b = 0.863, 0.149, 0.149   # #dc2626 red
-        elif v < 70 or v > 180:
+        elif v < self._thresh_low or v > self._thresh_high:
             r, g, b = 0.851, 0.467, 0.024   # #d97706 orange
         else:
             r, g, b = 0.086, 0.639, 0.290   # #16a34a green
-        self._ball.update(self._fmt_glucose(v), reading.trend_arrow, r, g, b)
+        self._ball.update(self._fmt_glucose(v), reading.trend_arrow, r, g, b, alert=self._high_alert_active)
 
     # ─── Glucose alerts ───────────────────────────────────────
 
     def _check_alerts(self, reading: GlucoseReading):
-        global _last_alert_status
-        with _last_alert_lock:
-            status = reading.status
-            trend = reading.trend_description.lower()
+        """Check glucose thresholds; send notifications with 15-min cooldown; update visual alert state."""
+        global _alert_last_notified
+        v = reading.value
+        trend = reading.trend_description.lower()
+        val_str = self._fmt_glucose(v)
+        unit_str = self._unit_label()
+        now = time.time()
 
-            # DoubleDown / DoubleUp rapid trend change
-            rapid_down = "doubledown" in trend or "double down" in trend
-            alert_key = status + ("_rapid" if rapid_down else "")
+        # ── Visual alert state (high glucose, only when alerts enabled) ──
+        new_high_alert = self._alert_enabled and v > self._thresh_alert
+        if new_high_alert != self._high_alert_active:
+            self._high_alert_active = new_high_alert
+            log.info(f"High alert {'activated' if new_high_alert else 'cleared'}: {v} mg/dL")
+            self._call_on_main(lambda active=new_high_alert: self._apply_alert_ui(active))
 
-            if alert_key == _last_alert_status:
+        # ── Determine which notification to send ──────────────────
+        if not self._alert_enabled:
+            return  # Alerts disabled — skip notifications
+
+        rapid_down = "doubledown" in trend or "double down" in trend
+        if v < 55:
+            alert_key, title, body = "very_low", "⚠️ Very Low Glucose", f"Glucose {val_str} {unit_str} — Take action now!"
+        elif v < self._thresh_low:
+            alert_key, title, body = "low", "🟡 Low Glucose", f"Glucose {val_str} {unit_str} {reading.trend_arrow}"
+        elif v > self._thresh_alert:
+            alert_key, title, body = "high", "🔴 High Glucose", f"Glucose {val_str} {unit_str} {reading.trend_arrow}"
+        elif rapid_down:
+            alert_key, title, body = "drop_fast", "⬇️ Glucose Dropping Fast", f"Glucose {val_str} {unit_str} {reading.trend_arrow}"
+        else:
+            return  # No alert condition
+
+        # ── 15-min cooldown per alert type ────────────────────────
+        with _alert_lock:
+            last = _alert_last_notified.get(alert_key, 0)
+            if now - last < ALERT_COOLDOWN_SEC:
                 return
-            _last_alert_status = alert_key
+            _alert_last_notified[alert_key] = now
 
-            val_str = self._fmt_glucose(reading.value)
-            unit_str = self._unit_label()
-            if reading.value < 55:
-                log.warning(f"[Critically Low Glucose] {reading.value} mg/dL")
-                rumps.notification("⚠️ Very Low Glucose", "", f"Glucose {val_str} {unit_str} — Take action now!")
-            elif reading.value < 70:
-                log.warning(f"[Low Glucose] {reading.value} mg/dL")
-                rumps.notification("🟡 Low Glucose", "", f"Glucose {val_str} {unit_str} {reading.trend_arrow}")
-            elif reading.value > 250:
-                log.warning(f"[High Glucose] {reading.value} mg/dL")
-                rumps.notification("🔴 High Glucose", "", f"Glucose {val_str} {unit_str} {reading.trend_arrow}")
-            elif rapid_down:
-                log.warning(f"[Glucose Dropping Fast] {reading.value} mg/dL {reading.trend_arrow}")
-                rumps.notification("⬇️ Glucose Dropping Fast", "", f"Glucose {val_str} {unit_str} {reading.trend_arrow}")
+        log.warning(f"[Alert:{alert_key}] {v} mg/dL")
+        rumps.notification(title, "", body)
+
+    def _apply_alert_ui(self, active: bool):
+        """Main thread: push alert state to main window and floating ball."""
+        self._html_window.set_alert(active)
+        if self._last_reading:
+            self._update_ball_display(self._last_reading)
 
     # ─── Menu events ──────────────────────────────────────────
 
@@ -259,8 +305,10 @@ class CGMApp(rumps.App):
         self._pending_ball_frame = None
         self._html_window.hide()
         if win_frame and win_frame is not True:
-            ball_y = win_frame.origin.y + win_frame.size.height - BALL_H
-            self._ball.show_at_y(ball_y)
+            # Align visible ball top with window top; panel is GLOW_PAD taller on each side
+            ball_y = win_frame.origin.y + win_frame.size.height - BALL_H - GLOW_PAD
+            # Pass the window's X so the ball appears on the same screen as the main window
+            self._ball.show_at_y(ball_y, screen_hint_x=win_frame.origin.x)
         else:
             self._ball.show()
 
@@ -274,8 +322,8 @@ class CGMApp(rumps.App):
         current_h = self._html_window.get_current_height()
         self._ball.hide()
         if ball_frame:
-            win_x = ball_frame.origin.x + BALL_W - MAIN_WINDOW_WIDTH
-            win_y = ball_frame.origin.y + BALL_H - current_h
+            win_x = ball_frame.origin.x + GLOW_PAD + BALL_W - MAIN_WINDOW_WIDTH
+            win_y = ball_frame.origin.y + GLOW_PAD + BALL_H - current_h
             self._html_window.show_at(win_x, win_y)
         else:
             self._html_window.show()
@@ -356,6 +404,11 @@ class CGMApp(rumps.App):
             "interval": self._refresh_interval,
             "display_mode": self._display_mode,
             "unit": self._glucose_unit,
+            "comparison": self._comparison,
+            "thresh_low":    self._thresh_low,
+            "thresh_high":   self._thresh_high,
+            "thresh_alert":  self._thresh_alert,
+            "alert_enabled": self._alert_enabled,
         }
         self._html_window.show_settings(config)
 
@@ -388,8 +441,20 @@ class CGMApp(rumps.App):
             threading.Thread(target=self._do_refresh, daemon=True).start()
         elif action == "page_ready":
             self._page_ready_event.set()
+            last_range = ui_state.load_range()
+            if last_range:
+                self._html_window.restore_range(last_range)
             if self._last_reading:
-                self._html_window.update_data(self._last_reading, self._history, unit=self._glucose_unit)
+                self._html_window.update_data(
+                    self._last_reading, self._history,
+                    unit=self._glucose_unit, comparison=self._comparison,
+                    thresh_low=self._thresh_low, thresh_high=self._thresh_high,
+                    thresh_alert=self._thresh_alert, alert_enabled=self._alert_enabled,
+                )
+        elif action == "save_range":
+            minutes = body.get("range")
+            if isinstance(minutes, int):
+                ui_state.save_range(minutes)
         elif action == "minimize_to_ball":
             self._call_on_main(self._do_minimize_to_ball)
         elif action == "hide":
@@ -470,6 +535,23 @@ class CGMApp(rumps.App):
         if unit in (GLUCOSE_UNIT_MGDL, GLUCOSE_UNIT_MMOL):
             self._glucose_unit = unit
             self._dexcom.credentials.save_glucose_unit(unit)
+        comparison = body.get("comparison", COMPARISON_OFF)
+        if comparison in (COMPARISON_OFF, COMPARISON_DAY, COMPARISON_WEEK, COMPARISON_BOTH):
+            self._comparison = comparison
+            self._dexcom.credentials.save_comparison(comparison)
+        # Thresholds (validate reasonable range 40–400 mg/dL)
+        def _clamp(v, lo, hi): return max(lo, min(hi, int(v)))
+        thresh_low   = _clamp(body.get("thresh_low",   DEFAULT_THRESH_LOW),   40, 200)
+        thresh_high  = _clamp(body.get("thresh_high",  DEFAULT_THRESH_HIGH),  80, 350)
+        thresh_alert = _clamp(body.get("thresh_alert", DEFAULT_THRESH_ALERT), 100, 400)
+        alert_enabled = bool(body.get("alert_enabled", True))
+        self._thresh_low, self._thresh_high, self._thresh_alert = thresh_low, thresh_high, thresh_alert
+        self._alert_enabled = alert_enabled
+        self._dexcom.credentials.save_thresholds(thresh_low, thresh_high, thresh_alert, alert_enabled)
+        # Re-evaluate alert state and refresh ball color immediately with new thresholds
+        if self._last_reading:
+            self._check_alerts(self._last_reading)
+            self._call_on_main(lambda: self._update_ball_display(self._last_reading))
         self._html_window.settings_result({"type": "save_display", "success": True, "message": "Saved"})
 
     # ─── Main thread dispatch ────────────────────────────────

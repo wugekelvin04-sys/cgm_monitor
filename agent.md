@@ -42,6 +42,7 @@ init/
 ├── html_window.py         # HTMLFloatingWindow: NSPanel + WKWebView main window
 ├── floating_ball.py       # FloatingBall: floating ball NSPanel (minimized state)
 ├── dexcom_client.py       # Dexcom API wrapper (pydexcom), with CredentialManager
+├── ui_state.py            # JSON UI state persistence (window pos + time range)
 ├── ai_analyzer.py         # GeminiAnalyzer (unused — AI removed from app.py)
 ├── bridge.py              # Python sidecar for Electron (JSON Lines over stdio)
 ├── local_store.py         # SQLite local storage (~/Library/Application Support/CGMMonitor/)
@@ -67,7 +68,9 @@ init/
 ## Architecture Notes
 
 ### Main Window (HTMLFloatingWindow)
-- `NSPanel` (NSWindowStyleMaskBorderless, NSFloatingWindowLevel) + `WKWebView`
+- `_FloatingPanel` (NSPanel subclass, `canBecomeKeyWindow→True`, `canBecomeMainWindow→False`) + `WKWebView`
+  - Required so WKWebView inputs are editable in borderless panels (especially after logout)
+  - `show_settings()` also calls `makeKeyAndOrderFront_` + `makeFirstResponder_(webview)` to ensure input focus
 - JS→Python communication: custom URL scheme `cgm://` (`_MainSchemeHandler`)
 - Python→JS: `evaluateJavaScript_completionHandler_`
 - Mouse events: `_MouseTracker` (NSObject) + `NSTrackingArea` (NSTrackingActiveAlways) — solves mousemove on non-key windows
@@ -77,23 +80,33 @@ init/
   - `initiateDrag_` records start Y, sets `_title_drag_active = True`
   - `mouseDragged_` checks flag → `_do_y_drag()`, X fixed at `screenWidth - windowWidth - 20`
   - `mouseUp_` clears flag
-  - `_PanelDelegate.windowDidMove_` as fallback: forces X back to right edge
+  - `_PanelDelegate.windowDidMove_` as fallback: forces X back to right edge; also debounced 0.4s save of position to `ui_state`
 - Main thread dispatch: `_MainCaller` (NSObject) + `performSelectorOnMainThread_withObject_waitUntilDone_`
+- `restore_range(minutes)`: evaluates `setRange(N, true)` JS — called on `page_ready` before first reading to restore last chart time range
 
 ### Floating Ball (FloatingBall)
-- Standalone `NSPanel` (borderless, floating level) + custom `_BallView` (NSView subclass)
+- Standalone `NSPanel` (borderless, floating level, `setHasShadow_(False)`) + custom `_BallView` (NSView subclass)
+- `GLOW_PAD = 14`: transparent padding around 44×44 ball so glow/alert halo can extend outward; panel is `72×72`, ball drawn in center
 - `_BallView.drawRect_`:
-  - White circular background (`bezierPathWithOvalInRect_`, radius = min(cx,cy)-1)
-  - Thin border (0.5px, 8% black transparent)
-  - Trend arc (`appendBezierPathWithArcWithCenter_radius_startAngle_endAngle_clockwise_`, radius-2, ±38°, 3.5px, round caps)
-  - Centered number (`NSFont.systemFontOfSize_(18)`, not bold)
+  - Fixed `radius = BALL_W / 2 - 1 = 21` (not view-bounds-based, so GLOW_PAD does not affect ball size)
+  - Alert glow: 6 concentric filled red circles (`extra_r` 2–12px beyond ball edge), alpha modulated by sine wave
+  - White circular background (`bezierPathWithOvalInRect_`, radius=21)
+  - Alert border: 2.5px red ring; normal border: 0.5px 8% black
+  - Trend arc: `appendBezierPathWithArcWithCenter_radius_startAngle_endAngle_clockwise_`, radius-2, ±38°, 3.5px, round caps
+  - Centered number: `NSFont.systemFontOfSize_(16)`
 - Trend angle mapping: `↑↑/↑→90°`, `↗→45°`, `→→0°`, `↘→-45°`, `↓/↓↓→-90°`
+- **Alert glow animation**:
+  - `_start_glow()`: creates `NSTimer` at 0.033s interval → `glowTick_` (requires `@objc.typedSelector(b'v@:@')`)
+  - `glowTick_`: advances `_glow_phase` by 0.15 rad/tick, `_glow_alpha = 0.08 + 0.82*(sin+0.5)`
+  - `_stop_glow()`: invalidates timer, resets `_glow_alpha = 0.0`
+  - `update_display(alert=True/False)` starts/stops glow; `_pending_alert` preserves state across `_build()`
 - **Y-axis only drag**:
-  - `mouseDragged_` only computes dy; `new_x` always = `screenWidth - BALL_W - 20`
+  - `mouseDragged_` only computes dy; `new_x` = `screenWidth - BALL_W - 20 - GLOW_PAD`
   - Y clamped within `screen.frame()` bounds
 - Right-click menu: `rightMouseDown_` → "Quit CGM"
 - Click (non-drag): calls `on_click` callback → hides ball, restores main window at ball position
-- **Pending mechanism**: `update(value, trend, r, g, b)` always updates `_pending_*`; first `_build()` initializes with pending values
+- **Pending mechanism**: `update(value, trend, r, g, b, alert)` always updates `_pending_*`; first `_build()` initializes with pending values (including alert state)
+- `panel.setHasShadow_(False)`: required — without it, macOS renders a grey shadow ring visible in the transparent GLOW_PAD area
 
 ### Hover Mode
 - Two display modes: `DISPLAY_MODE_WINDOW` (default), `DISPLAY_MODE_HOVER`
@@ -115,7 +128,7 @@ init/
 ### JS Messages (action)
 | action | handler |
 |--------|---------|
-| `page_ready` | triggers `load_credentials` to Python (race-condition fix) |
+| `page_ready` | triggers `restore_range()` + initial `update_data` (race-condition fix) |
 | `minimize_to_ball` | hides main window, shows floating ball |
 | `hide` | hides main window (no ball) |
 | `initiate_drag` | X+Y drag (main window free; ball Y-only, fixed to right) |
@@ -125,6 +138,7 @@ init/
 | `test_dexcom` | tests Dexcom connection |
 | `save_dexcom` | saves and logs in to Dexcom |
 | `save_display` | saves refresh interval and display mode, restarts timer |
+| `save_range` | saves selected chart time range to `ui_state.json` |
 | `collapse_done` | animation finished → switch from main window to ball |
 | `settings_open` | settings overlay opened → cancel collapse timer |
 | `settings_close` | settings overlay closed → schedule collapse (hover mode) |
@@ -228,6 +242,13 @@ function glucoseColor(v) {
 
 ## Data Storage
 
+### UI State (ui_state.py)
+- Path: `~/Library/Application Support/CGMMonitor/ui_state.json`
+- Persists: `win_x`, `win_y` (main window position), `last_range` (chart time range in minutes)
+- `save_window_pos(x, y)` / `load_window_pos()` → called from `_PanelDelegate.windowDidMove_` (debounced 0.4s) and `_position_window()`
+- `save_range(minutes)` / `load_range()` → called from `save_range` JS action and `page_ready` handler
+- Position restore validates against `_screen_containing_point()`; falls back to default if screen not found
+
 ### Keyring (system Keychain / Credential Manager)
 - Service: `CGMMonitor`
 - Keys: `dexcom_username`, `dexcom_password`, `dexcom_region`, `refresh_interval`, `display_mode`
@@ -262,12 +283,16 @@ REFRESH_INTERVAL_DEFAULT=300  # 5min
 
 3. **24h data gap**: 2h warmup after sensor replacement, API returns no data; chart correctly shows gap
 
-4. **`_BallView` init method**: uses multi-arg init `initWithOnClick_onQuit_value_trend_r_g_b_`; PyObjC selector must match exactly
+4. **`_BallView` init method**: uses multi-arg init `initWithOnClick_onQuit_onHover_value_trend_r_g_b_`; PyObjC selector must match exactly
 
-5. **`screen.frame()` vs `screen.visibleFrame()`**:
+5. **`@objc.typedSelector(b'v@:@')` for NSTimer callbacks**: PyObjC dynamically-created ObjC class methods called by the ObjC runtime (e.g. NSTimer target/selector) must be annotated with this decorator; otherwise the selector is not found and the timer silently fails
+
+6. **CGColor in PyObjC crashes**: `NSColor.CGColor()` returns a raw `CGColorRef` (`ObjCPointer`); passing it to `CALayer.setBackgroundColor_()` causes `Trace/BPT trap: 5`. Never use `CGColor()` — use `NSColor` everywhere. NSShadow and CALayer shadow approaches also unreliable; prefer NSBezierPath drawing
+
+7. **`screen.frame()` vs `screen.visibleFrame()`**:
    - `visibleFrame()`: for initial positioning (avoids Dock/menu bar)
    - `frame()`: for drag clamping (full screen bounds, avoids Dock-caused boundary issues)
 
-6. **`settings_window.py`**: legacy file kept but not used (`app.py` does not import it)
+8. **`settings_window.py`**: legacy file kept but not used (`app.py` does not import it)
 
-7. **`ai_analyzer.py`**: legacy file kept but AI feature has been removed from `app.py`
+9. **`ai_analyzer.py`**: legacy file kept but AI feature has been removed from `app.py`

@@ -1,4 +1,5 @@
 import objc
+import math
 from AppKit import (
     NSPanel, NSWindowStyleMaskBorderless, NSFloatingWindowLevel,
     NSColor, NSPoint, NSMakeRect, NSBackingStoreBuffered,
@@ -13,10 +14,21 @@ _NSTrackingActiveAlways          = 0x080
 _NSTrackingInVisibleRect         = 0x200
 from logger import get_logger
 
+
+def _screen_containing_point(pt):
+    """Return the NSScreen whose frame contains pt, falling back to mainScreen."""
+    for s in NSScreen.screens():
+        f = s.frame()
+        if (f.origin.x <= pt.x < f.origin.x + f.size.width and
+                f.origin.y <= pt.y < f.origin.y + f.size.height):
+            return s
+    return NSScreen.mainScreen()
+
 log = get_logger("ball")
 
 BALL_W = 44
 BALL_H = 44
+GLOW_PAD = 14   # Transparent padding around the ball so shadow can extend outside the circle
 
 # Trend arrow -> arc center angle (AppKit coordinates: 0°=right, 90°=up, counter-clockwise positive)
 _TREND_ANGLE = {
@@ -44,9 +56,13 @@ class _BallView(objc.lookUpClass("NSView")):
         self._r = r
         self._g = g
         self._b = b
+        self._alert = False
         self._dragging = False
         self._drag_start_screen = None
         self._drag_start_origin = None
+        self._glow_alpha = 0.0
+        self._glow_phase = 0.0
+        self._glow_timer = None
         self.setWantsLayer_(True)
         return self
 
@@ -57,21 +73,36 @@ class _BallView(objc.lookUpClass("NSView")):
         bounds = self.bounds()
         cx = bounds.size.width / 2
         cy = bounds.size.height / 2
-        radius = min(cx, cy) - 1  # Leave 1px for anti-aliasing
+        radius = BALL_W / 2 - 1  # Fixed ball radius independent of (padded) view size
 
         # Clear (transparent)
         NSColor.clearColor().setFill()
         NSBezierPath.fillRect_(bounds)
 
-        # White circular background
+        # Glow effect: concentric filled circles drawn from large→small (fade inward),
+        # creating a soft pulsing halo in the GLOW_PAD area outside the ball circle.
+        # Drawn BEFORE white fill so the white circle covers the inner parts.
         circle_rect = NSMakeRect(cx - radius, cy - radius, radius * 2, radius * 2)
+        if self._alert and self._glow_alpha > 0:
+            a = self._glow_alpha
+            for extra_r, intensity in [(12, 0.07), (10, 0.12), (8, 0.20), (6, 0.28), (4, 0.38), (2, 0.50)]:
+                gr = NSMakeRect(cx - radius - extra_r, cy - radius - extra_r,
+                                (radius + extra_r) * 2, (radius + extra_r) * 2)
+                NSColor.colorWithRed_green_blue_alpha_(0.863, 0.149, 0.149, a * intensity).setFill()
+                NSBezierPath.bezierPathWithOvalInRect_(gr).fill()
+
+        # White circular background
         NSColor.colorWithRed_green_blue_alpha_(1, 1, 1, 0.96).setFill()
         circle = NSBezierPath.bezierPathWithOvalInRect_(circle_rect)
         circle.fill()
 
-        # Thin border
-        NSColor.colorWithRed_green_blue_alpha_(0, 0, 0, 0.08).setStroke()
-        circle.setLineWidth_(0.5)
+        # Border: thick red ring when alert, thin gray otherwise
+        if self._alert:
+            NSColor.colorWithRed_green_blue_alpha_(0.863, 0.149, 0.149, 0.90).setStroke()
+            circle.setLineWidth_(2.5)
+        else:
+            NSColor.colorWithRed_green_blue_alpha_(0, 0, 0, 0.08).setStroke()
+            circle.setLineWidth_(0.5)
         circle.stroke()
 
         # Trend arc (outer arc segment, ±38° range)
@@ -138,13 +169,12 @@ class _BallView(objc.lookUpClass("NSView")):
         oy = self._drag_start_origin.y if self._drag_start_origin else 0
         new_y = oy + dy
 
-        screen = NSScreen.mainScreen()
+        # Pin X to right edge of whichever screen the cursor is on (multi-monitor support)
+        screen = _screen_containing_point(loc)
         if screen:
             sf = screen.frame()
-            # X is pinned to the right edge
-            new_x = sf.origin.x + sf.size.width - BALL_W - 20
-            # Y is clamped within screen bounds
-            new_y = max(sf.origin.y, min(new_y, sf.origin.y + sf.size.height - BALL_H))
+            new_x = sf.origin.x + sf.size.width - BALL_W - 20 - GLOW_PAD
+            new_y = max(sf.origin.y, min(new_y, sf.origin.y + sf.size.height - BALL_H - 2 * GLOW_PAD))
         else:
             new_x = self._drag_start_origin.x if self._drag_start_origin else 0
 
@@ -168,12 +198,46 @@ class _BallView(objc.lookUpClass("NSView")):
     def doQuit_(self, sender):
         self._on_quit()
 
-    def update_display(self, value, trend, r, g, b):
+    @objc.typedSelector(b'v@:@')
+    def glowTick_(self, timer):
+        """NSTimer callback: advance glow sine-wave phase and redraw."""
+        self._glow_phase = (self._glow_phase + 0.15) % (2 * math.pi)
+        # Sine wave oscillates between 0.08 and 0.90
+        self._glow_alpha = 0.08 + 0.82 * (math.sin(self._glow_phase) * 0.5 + 0.5)
+        self.setNeedsDisplay_(True)
+
+    def _start_glow(self):
+        """Start pulsing glow via NSTimer + NSShadow in drawRect_ (no CGColor needed)."""
+        if self._glow_timer:
+            self._glow_timer.invalidate()
+        self._glow_phase = 0.0
+        self._glow_alpha = 0.08
+        NSTimer = objc.lookUpClass('NSTimer')
+        self._glow_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            0.033, self, b'glowTick:', None, True
+        )
+        self.setNeedsDisplay_(True)
+
+    def _stop_glow(self):
+        """Stop glow timer and clear alpha."""
+        if self._glow_timer:
+            self._glow_timer.invalidate()
+            self._glow_timer = None
+        self._glow_alpha = 0.0
+        self.setNeedsDisplay_(True)
+
+    def update_display(self, value, trend, r, g, b, alert=False):
+        prev_alert = self._alert
         self._value = value
         self._trend = trend
         self._r = r
         self._g = g
         self._b = b
+        self._alert = alert
+        if alert and not prev_alert:
+            self._start_glow()
+        elif not alert and prev_alert:
+            self._stop_glow()
         self.setNeedsDisplay_(True)
 
 
@@ -192,12 +256,16 @@ class FloatingBall:
         self._pending_r = 0.086
         self._pending_g = 0.639
         self._pending_b = 0.290
+        self._pending_alert = False
 
     def _build(self):
         if self._built:
             return
         self._built = True
         log.info("Building floating ball")
+
+        _pw = BALL_W + 2 * GLOW_PAD
+        _ph = BALL_H + 2 * GLOW_PAD
 
         view = _BallView.alloc().initWithOnClick_onQuit_onHover_value_trend_r_g_b_(
             self._on_click,
@@ -209,10 +277,15 @@ class FloatingBall:
             self._pending_g,
             self._pending_b,
         )
-        view.setFrame_(NSMakeRect(0, 0, BALL_W, BALL_H))
+        view.setFrame_(NSMakeRect(0, 0, _pw, _ph))
+
+        # Restore alert state that was set before the view was built
+        if self._pending_alert:
+            view._alert = True
+            view._start_glow()
 
         panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
-            NSMakeRect(0, 0, BALL_W, BALL_H),
+            NSMakeRect(0, 0, _pw, _ph),
             NSWindowStyleMaskBorderless,
             NSBackingStoreBuffered,
             False,
@@ -220,7 +293,7 @@ class FloatingBall:
         panel.setLevel_(NSFloatingWindowLevel)
         panel.setOpaque_(False)
         panel.setBackgroundColor_(NSColor.clearColor())
-        panel.setHasShadow_(True)
+        panel.setHasShadow_(False)
         panel.setHidesOnDeactivate_(False)
         panel.setContentView_(view)
 
@@ -232,8 +305,8 @@ class FloatingBall:
         screen = NSScreen.mainScreen()
         if screen:
             sf = screen.visibleFrame()
-            x = sf.origin.x + sf.size.width - BALL_W - 20
-            y = sf.origin.y + sf.size.height - BALL_H - 10
+            x = sf.origin.x + sf.size.width - BALL_W - 20 - GLOW_PAD
+            y = sf.origin.y + sf.size.height - BALL_H - 10 - GLOW_PAD
             panel.setFrameOrigin_(NSPoint(x, y))
 
     def show(self):
@@ -241,16 +314,26 @@ class FloatingBall:
         if self._panel:
             self._panel.orderFront_(None)
 
-    def show_at_y(self, y: float):
-        """Show ball at specified Y coordinate (X pinned to right, Y auto-clamped to screen bounds)"""
+    def show_at_y(self, y: float, screen_hint_x: float = None):
+        """Show ball at specified Y coordinate (X pinned to right edge of target screen, Y clamped).
+
+        screen_hint_x: X coordinate used to detect which screen to use (e.g. main window origin X).
+                       Defaults to the ball's current position when not provided.
+        """
         self._build()
         if not self._panel:
             return
-        screen = NSScreen.mainScreen()
+        # Use the hint point (e.g. main window's origin) to determine which screen the ball should appear on.
+        # Falling back to the ball's current origin only when no hint is provided.
+        if screen_hint_x is not None:
+            hint_pt = NSPoint(screen_hint_x, y)
+        else:
+            hint_pt = self._panel.frame().origin
+        screen = _screen_containing_point(hint_pt)
         if screen:
             sf = screen.frame()
-            x = sf.origin.x + sf.size.width - BALL_W - 20
-            y = max(sf.origin.y, min(y, sf.origin.y + sf.size.height - BALL_H))
+            x = sf.origin.x + sf.size.width - BALL_W - 20 - GLOW_PAD
+            y = max(sf.origin.y, min(y, sf.origin.y + sf.size.height - BALL_H - 2 * GLOW_PAD))
             self._panel.setFrameOrigin_(NSPoint(x, y))
         self._panel.orderFront_(None)
 
@@ -261,15 +344,16 @@ class FloatingBall:
     def is_visible(self):
         return bool(self._panel and self._panel.isVisible())
 
-    def update(self, value: str, trend: str, r: float, g: float, b: float):
-        """Update value, trend and color, must be called on the main thread"""
+    def update(self, value: str, trend: str, r: float, g: float, b: float, alert: bool = False):
+        """Update value, trend, color and alert state; must be called on the main thread"""
         self._pending_value = value
         self._pending_trend = trend
         self._pending_r = r
         self._pending_g = g
         self._pending_b = b
+        self._pending_alert = alert
         if self._view:
-            self._view.update_display(value, trend, r, g, b)
+            self._view.update_display(value, trend, r, g, b, alert=alert)
 
     def get_frame(self):
         """Return the ball's NSRect (call on main thread)"""
