@@ -221,6 +221,13 @@ class DexcomClient:
                     log.error(f"get_current_reading error: {e}", exc_info=True)
                 return None
 
+    def get_history_from_store(self, minutes: int = HISTORY_MINUTES) -> List[GlucoseReading]:
+        """Read history from local store only (no API call). Returns empty list if store unavailable."""
+        with self._lock:
+            if self._store:
+                return self._store.load(minutes)
+            return []
+
     def get_history(self, minutes: int = HISTORY_MINUTES) -> List[GlucoseReading]:
         with self._lock:
             if not self._dexcom:

@@ -30,7 +30,8 @@
       "target": "nsis"
     },
     "extraResources": [
-      { "from": "../", "to": "python", "filter": ["*.py", "ui/**"] }
+      { "from": "../", "to": "python", "filter": ["*.py", "ui/**"] },
+      { "from": "icon.png", "to": "icon.png" }
     ]
   },
   "devDependencies": {

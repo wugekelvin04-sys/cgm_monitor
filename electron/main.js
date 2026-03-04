@@ -19,11 +19,18 @@ let tray         = null
 let python       = null
 let displayMode  = 'window'   // 'window' | 'hover'
 let glucoseUnit  = 'mgdl'     // 'mgdl' | 'mmol'
+let currentInterval = 120     // refresh interval in seconds
+let currentUsername = ''
+let currentPassword = ''
+let currentOus      = false
 let settingsOpen = false
 let collapseTimer = null
+let currentMainH = MAIN_H   // Track actual main window height (changes in compact mode)
 
 // Drag: main window
+let dragStartScreenX  = 0
 let dragStartScreenY  = 0
+let dragStartWindowX  = 0
 let dragStartWindowY  = 0
 
 // Drag: floating ball
@@ -36,6 +43,11 @@ function primaryDisplay() { return screen.getPrimaryDisplay() }
 function fixedX(width) {
   const d = primaryDisplay()
   return d.bounds.x + d.bounds.width - width - MARGIN
+}
+
+function clampX(x, width) {
+  const d = primaryDisplay()
+  return Math.max(d.bounds.x, Math.min(x, d.bounds.x + d.bounds.width - width))
 }
 
 function clampY(y, height) {
@@ -71,8 +83,8 @@ function startPython() {
   python.stderr.on('data', (d) => process.stderr.write('[py] ' + d))
   python.on('exit', (code) => console.log('Python exited:', code))
 
-  // Request credentials immediately after startup
-  toPython({ type: 'load_credentials' })
+  // Credentials are requested after page_ready to avoid race condition
+  // (page must register IPC listeners before we send show_settings)
 }
 
 function toPython(msg) {
@@ -86,8 +98,12 @@ function onPythonMsg(msg) {
   switch (msg.type) {
 
     case 'credentials':
-      displayMode = msg.display_mode || 'window'
-      glucoseUnit = msg.unit || 'mgdl'
+      displayMode     = msg.display_mode || 'window'
+      glucoseUnit     = msg.unit || 'mgdl'
+      currentInterval = msg.interval || 120
+      currentUsername = msg.username || ''
+      currentPassword = msg.password || ''
+      currentOus      = !!msg.ous
       if (msg.has_credentials) {
         toPython({ type: 'login_from_keychain' })
       } else {
@@ -105,7 +121,9 @@ function onPythonMsg(msg) {
     case 'login_result':
       if (msg.success) {
         if (displayMode === 'hover') {
-          hideMain(); showBall()
+          hideMain()
+          const d = primaryDisplay()
+          showBall(d.workArea.y + 10)
         } else {
           showMain()
         }
@@ -248,21 +266,19 @@ function minimizeToBall() {
   toRenderer('do_collapse', {})
   // Save target ball Y, to be used when collapse_done arrives
   mainWindow._pendingBallY = bounds
-    ? bounds.y + bounds.height - BALL_H
+    ? bounds.y
     : primaryDisplay().workArea.y + 10
 }
 
 function expandFromBall() {
   const ballBounds = ballWindow ? ballWindow.getBounds() : null
-  const mainH = mainWindow ? mainWindow.getBounds().height : MAIN_H
-  if (ballBounds) {
-    const winX = ballBounds.x + BALL_W - MAIN_W
-    const winY = ballBounds.y + BALL_H - mainH
-    if (mainWindow) mainWindow.setPosition(winX, clampY(winY, mainH))
-  }
+  const mainH = currentMainH
   hideBall()
-  // Show window first, then trigger expand animation
   showMain()
+  if (ballBounds && mainWindow) {
+    const winX = ballBounds.x + BALL_W - MAIN_W
+    mainWindow.setPosition(winX, clampY(ballBounds.y, currentMainH))
+  }
   toRenderer('do_expand', {})
 }
 
@@ -281,10 +297,17 @@ function clearCollapseTimer() {
 
 // ── System tray ──────────────────────────────────────────────────────────────
 function createTray() {
-  // Use empty icon; macOS supports setTitle for text display, Windows requires a real icon
-  const icon = nativeImage.createEmpty()
+  let icon
+  if (process.platform === 'win32') {
+    const iconPath = app.isPackaged
+      ? path.join(process.resourcesPath, 'icon.png')
+      : path.join(__dirname, 'icon.png')
+    icon = nativeImage.createFromPath(iconPath)
+  } else {
+    icon = nativeImage.createEmpty()
+  }
   tray = new Tray(icon)
-  tray.setTitle('⏳')
+  if (process.platform !== 'win32') tray.setTitle('⏳')
   tray.setToolTip('CGM Monitor')
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: 'Show / Hide', click: () => mainWindow?.isVisible() ? hideMain() : showMain() },
@@ -300,7 +323,13 @@ function fmtGlucose(mgdl) {
 }
 
 function updateTray(data) {
-  if (tray) tray.setTitle(` ${fmtGlucose(data.value)} ${data.trend || ''}`)
+  if (!tray) return
+  const label = `${fmtGlucose(data.value)} ${data.trend || ''}`.trim()
+  if (process.platform === 'win32') {
+    tray.setToolTip(`CGM: ${label}`)
+  } else {
+    tray.setTitle(` ${label}`)
+  }
 }
 
 // ── IPC: unified entry point (main window + floating ball share preload, distinguished by sender) ───────────
@@ -323,8 +352,12 @@ function handleBallMsg(msg) {
     case 'ball_hover':
       if (displayMode === 'hover') { clearCollapseTimer(); expandFromBall() }
       break
-    case 'ball_quit':
-      app.quit()
+    case 'ball_contextmenu':
+      Menu.buildFromTemplate([
+        { label: 'Refresh Now', click: () => toPython({ type: 'force_refresh' }) },
+        { type: 'separator' },
+        { label: 'Quit', click: () => app.quit() },
+      ]).popup({ window: ballWindow })
       break
     case 'ball_drag_start':
       ballDragStartScreenY = msg.screenY
@@ -343,7 +376,8 @@ function handleBallMsg(msg) {
 function handleMainMsg(msg) {
   switch (msg.action) {
     case 'page_ready':
-      break  // Python side will automatically push latest data
+      toPython({ type: 'load_credentials' })
+      break
     case 'minimize_to_ball':
       minimizeToBall()
       break
@@ -358,6 +392,14 @@ function handleMainMsg(msg) {
       break
     case 'open_settings':
       showMain()
+      toRenderer('show_settings', {
+        username:     currentUsername,
+        password:     currentPassword,
+        ous:          currentOus,
+        interval:     currentInterval,
+        display_mode: displayMode,
+        unit:         glucoseUnit,
+      })
       break
     case 'settings_open':
       settingsOpen = true
@@ -377,25 +419,31 @@ function handleMainMsg(msg) {
       toPython({ type: 'force_refresh' })
       break
     case 'save_dexcom':
+      currentUsername = msg.username || ''
+      currentPassword = msg.password || ''
+      currentOus      = !!msg.ous
       toPython({ type: 'save_credentials', username: msg.username, password: msg.password, ous: msg.ous })
       break
     case 'test_dexcom':
       toPython({ type: 'test_credentials', username: msg.username, password: msg.password, ous: msg.ous })
       break
     case 'save_display':
-      displayMode = msg.display_mode || 'window'
-      glucoseUnit = msg.unit || 'mgdl'
+      displayMode     = msg.display_mode || 'window'
+      glucoseUnit     = msg.unit || 'mgdl'
+      currentInterval = msg.interval || 120
       toPython({ type: 'save_display', interval: msg.interval, display_mode: msg.display_mode, unit: msg.unit || 'mgdl' })
       break
     case 'set_compact': {
       const h = msg.compact ? COMPACT_H : MAIN_H
+      currentMainH = h
       if (mainWindow) {
         const [wx, wy] = mainWindow.getPosition()
-        const oldH = mainWindow.getBounds().height
-        mainWindow.setSize(MAIN_W, h)
-        // Pin top edge
-        mainWindow.setPosition(fixedX(MAIN_W), wy - (h - oldH))
+        // setBounds is atomic (avoids flicker from separate setSize + setPosition)
+        // Pin top edge: Y stays fixed, window grows/shrinks downward
+        mainWindow.setBounds({ x: wx, y: wy, width: MAIN_W, height: h })
       }
+      // Notify renderer AFTER resize so CSS layout change happens at the right size
+      toRenderer('compact_applied', { compact: msg.compact })
       break
     }
     case 'logout':
@@ -407,17 +455,20 @@ function handleMainMsg(msg) {
   }
 }
 
-// Main window Y-axis drag
-ipcMain.on('cgm-drag-start', (_event, screenY) => {
+// Main window drag (X and Y)
+ipcMain.on('cgm-drag-start', (_event, screenX, screenY) => {
+  const [wx, wy] = mainWindow ? mainWindow.getPosition() : [0, 0]
+  dragStartScreenX = screenX
   dragStartScreenY = screenY
-  dragStartWindowY = mainWindow ? mainWindow.getPosition()[1] : 0
+  dragStartWindowX = wx
+  dragStartWindowY = wy
 })
 
-ipcMain.on('cgm-drag-move', (_event, screenY) => {
+ipcMain.on('cgm-drag-move', (_event, screenX, screenY) => {
   if (!mainWindow) return
-  const dy   = screenY - dragStartScreenY
-  const newY = clampY(dragStartWindowY + dy, mainWindow.getBounds().height)
-  mainWindow.setPosition(fixedX(MAIN_W), newY)
+  const newX = clampX(dragStartWindowX + (screenX - dragStartScreenX), MAIN_W)
+  const newY = clampY(dragStartWindowY + (screenY - dragStartScreenY), mainWindow.getBounds().height)
+  mainWindow.setPosition(newX, newY)
 })
 
 // ── App lifecycle ──────────────────────────────────────────────────────────────

@@ -10,7 +10,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on(channel, (_event, data) => cb(data))
   },
 
-  // Drag: Y-axis only
-  dragStart: (screenY) => ipcRenderer.send('cgm-drag-start', screenY),
-  dragMove:  (screenY) => ipcRenderer.send('cgm-drag-move',  screenY),
+  // Drag: X and Y axes
+  dragStart: (screenX, screenY) => ipcRenderer.send('cgm-drag-start', screenX, screenY),
+  dragMove:  (screenX, screenY) => ipcRenderer.send('cgm-drag-move',  screenX, screenY),
 })

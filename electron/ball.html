@@ -108,10 +108,10 @@
     window.electronAPI?.send({ action: 'ball_hover' })
   })
 
-  // ── Right-click quit ─────────────────────────────────────────────────────────
+  // ── Right-click context menu ──────────────────────────────────────────────
   document.addEventListener('contextmenu', (e) => {
     e.preventDefault()
-    window.electronAPI?.send({ action: 'ball_quit' })
+    window.electronAPI?.send({ action: 'ball_contextmenu' })
   })
 </script>
 </body>

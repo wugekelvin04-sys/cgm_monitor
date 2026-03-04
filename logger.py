@@ -7,7 +7,11 @@ import threading
 import time
 
 
-LOG_DIR = pathlib.Path.home() / "Library" / "Logs" / "CGM"
+if sys.platform == 'win32':
+    import os
+    LOG_DIR = pathlib.Path(os.environ.get('APPDATA', pathlib.Path.home())) / "CGM" / "Logs"
+else:
+    LOG_DIR = pathlib.Path.home() / "Library" / "Logs" / "CGM"
 KEEP_DAYS = 7
 
 

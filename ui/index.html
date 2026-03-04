@@ -653,25 +653,28 @@
   }
 
   // ─── Compact mode toggle ─────────────────────────────
-  function toggleCompact() {
-    compactMode = !compactMode;
+  function applyCompactLayout(compact) {
     const chartSection = document.getElementById('chart-section');
-    const statsRow = document.getElementById('stats-row');
-    const rangeRow = document.getElementById('range-row');
-    const compactBottom = document.getElementById('compact-bottom');
-
-    if (compactMode) {
-      chartSection.style.display = 'none';
-      statsRow.style.display = 'none';
-      rangeRow.style.display = 'none';
+    const statsRow     = document.getElementById('stats-row');
+    const rangeRow     = document.getElementById('range-row');
+    const compactBottom= document.getElementById('compact-bottom');
+    if (compact) {
+      chartSection.style.display  = 'none';
+      statsRow.style.display      = 'none';
+      rangeRow.style.display      = 'none';
       compactBottom.style.display = 'flex';
     } else {
-      chartSection.style.display = 'flex';
-      statsRow.style.display = 'flex';
-      rangeRow.style.display = 'flex';
+      chartSection.style.display  = 'flex';
+      statsRow.style.display      = 'flex';
+      rangeRow.style.display      = 'flex';
       compactBottom.style.display = 'none';
     }
+  }
 
+  function toggleCompact() {
+    compactMode = !compactMode;
+    // Send to main first; main resizes window then sends compact_applied back.
+    // CSS layout changes only after the window is the right size (no flash).
     send({ action: 'set_compact', compact: compactMode });
   }
 
@@ -919,16 +922,14 @@
   }
   setInterval(tickAgeText, 30000);
 
-  // ─── Drag (Y-axis only) ────────────────────────────────────────────────────
+  // ─── Drag (X and Y) ────────────────────────────────────────────────────────
   let _dragging = false;
-  let _dragStartY = 0;
 
   document.getElementById('top-row').addEventListener('mousedown', function(e) {
     if (e.target.closest('#icon-btns')) return;
     if (IS_ELECTRON) {
       _dragging = true;
-      _dragStartY = e.screenY;
-      window.electronAPI.dragStart(e.screenY);
+      window.electronAPI.dragStart(e.screenX, e.screenY);
       e.preventDefault();
     } else {
       send({ action: 'initiate_drag' });
@@ -937,7 +938,7 @@
 
   document.addEventListener('mousemove', function(e) {
     if (!_dragging || !IS_ELECTRON) return;
-    window.electronAPI.dragMove(e.screenY);
+    window.electronAPI.dragMove(e.screenX, e.screenY);
   });
 
   document.addEventListener('mouseup', function() { _dragging = false; });
@@ -954,10 +955,11 @@
   // ─── Electron IPC receive ────────────────────────────────────────────────
   if (IS_ELECTRON) {
     window.electronAPI.on('update_glucose',  window.updateGlucose);
-    window.electronAPI.on('show_settings',   window.showSettings);
-    window.electronAPI.on('settings_result', window.settingsResult);
-    window.electronAPI.on('do_collapse',     () => window.startCollapseAnimation?.());
-    window.electronAPI.on('do_expand',       () => window.startExpandAnimation?.());
+    window.electronAPI.on('show_settings',   (data) => window.showSettings(data));
+    window.electronAPI.on('settings_result', (data) => window.settingsResult(data));
+    window.electronAPI.on('do_collapse',      () => window.startCollapseAnimation?.());
+    window.electronAPI.on('do_expand',        () => window.startExpandAnimation?.());
+    window.electronAPI.on('compact_applied',  (data) => applyCompactLayout(data.compact));
   }
 
   // ─── Settings ────────────────────────────────────────

@@ -9,10 +9,13 @@ import json
 import threading
 import logging
 
+# Windows stdout defaults to cp1252 which can't encode trend arrows (→ etc.)
+# Reconfigure to UTF-8 so JSON protocol works correctly
+if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
+    sys.stdout.reconfigure(encoding='utf-8')
+
 # ── Fix logger: disable stdout handler to avoid polluting the JSON protocol ──────────────────────
 # Must be set before importing logger, otherwise logger._setup() will have already added StreamHandler(stdout)
-_orig_stream = logging.StreamHandler.stream.fget if hasattr(logging.StreamHandler.stream, 'fget') else None
-
 import logging.handlers as _lh
 
 # Importing logger triggers logger.py's _setup(); remove the stdout handler afterwards
@@ -88,6 +91,28 @@ def _do_refresh():
         _refresh_lock.release()
 
 
+def _do_startup_refresh():
+    """On keychain login: first push cached store data immediately, then call API for fresh data.
+    This ensures historical data is visible instantly on restart even before the API responds."""
+    # Step 1: push whatever is already in the local store (fast, no API call)
+    try:
+        cached_history = dexcom.get_history_from_store()
+        if cached_history:
+            latest = cached_history[-1]
+            data = latest.to_dict()
+            data["history"] = [
+                {"t": int(r.timestamp.timestamp()), "v": r.value}
+                for r in cached_history
+            ]
+            send({"type": "glucose_data", "data": data})
+            log.info(f"Pushed {len(cached_history)} cached store records before API call")
+    except Exception as e:
+        log.warning(f"Store pre-load failed: {e}")
+
+    # Step 2: full API refresh (updates store and sends live data)
+    _do_refresh()
+
+
 # ── Timer ────────────────────────────────────────────────────────────────────
 def _timer_loop(interval: int, stop: threading.Event):
     while not stop.wait(interval):
@@ -129,6 +154,7 @@ def handle(cmd: dict):
         send({
             "type": "credentials",
             "username": username or "",
+            "password": password or "",
             "has_credentials": bool(username and password),
             "ous": ous,
             "interval": interval,
@@ -140,7 +166,7 @@ def handle(cmd: dict):
         success = dexcom.login_from_keychain()
         send({"type": "login_result", "success": success, "from_keychain": True})
         if success:
-            threading.Thread(target=_do_refresh, daemon=True).start()
+            threading.Thread(target=_do_startup_refresh, daemon=True).start()
             _start_timer()
 
     elif action == "save_credentials":
@@ -168,6 +194,7 @@ def handle(cmd: dict):
             send({"type": "test_credentials_result", "success": True,
                   "message": "Connected successfully"})
         except Exception as e:
+            log.warning(f"test_credentials failed: {type(e).__name__}: {e}")
             send({"type": "test_credentials_result", "success": False, "message": str(e)})
 
     elif action == "save_display":

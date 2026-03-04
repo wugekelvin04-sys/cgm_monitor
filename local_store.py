@@ -9,7 +9,12 @@ from logger import get_logger
 
 log = get_logger("store")
 
-DATA_DIR = Path.home() / "Library" / "Application Support" / "CGMMonitor"
+import sys as _sys
+if _sys.platform == 'win32':
+    import os as _os
+    DATA_DIR = Path(_os.environ.get('APPDATA', Path.home())) / "CGMMonitor"
+else:
+    DATA_DIR = Path.home() / "Library" / "Application Support" / "CGMMonitor"
 
 # Local data retention days
 RETAIN_DAYS = 30
