@@ -6,3 +6,4 @@ truststore>=0.9.0
 pyobjc-core>=9.0
 pyobjc-framework-Cocoa>=9.0
 pyobjc-framework-WebKit>=9.0
+pylibrelinkup>=0.10.0

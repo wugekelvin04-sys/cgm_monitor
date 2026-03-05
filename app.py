@@ -6,6 +6,7 @@ from typing import Optional, List
 import rumps
 
 from dexcom_client import DexcomClient
+from libre_client import LibreClient
 from html_window import HTMLFloatingWindow
 from floating_ball import FloatingBall, BALL_W, BALL_H, GLOW_PAD
 from models import GlucoseReading
@@ -31,6 +32,9 @@ class CGMApp(rumps.App):
         super().__init__("⏳ CGM", quit_button=None)
 
         self._dexcom = DexcomClient()
+        self._libre = LibreClient()
+        self._provider_type = "dexcom"          # "dexcom" | "freestyle_libre"
+        self._current_provider = self._dexcom   # Dynamic pointer set in _startup()
         self._refresh_lock = threading.Lock()
         self._refresh_interval = REFRESH_INTERVAL_DEFAULT
         self._timer: Optional[rumps.Timer] = None
@@ -119,20 +123,41 @@ class CGMApp(rumps.App):
             self._thresh_low, self._thresh_high, self._thresh_alert, self._alert_enabled = saved_thresh
             log.info(f"Thresholds: low={self._thresh_low} high={self._thresh_high} alert={self._thresh_alert} enabled={self._alert_enabled}")
 
+        # Load provider type and point _current_provider accordingly
+        self._provider_type = ui_state.load_provider_type()
+        if self._provider_type == "freestyle_libre":
+            self._current_provider = self._libre
+            log.info("Provider: FreeStyle Libre")
+        else:
+            self._provider_type = "dexcom"
+            self._current_provider = self._dexcom
+            log.info("Provider: Dexcom")
+
         self._html_window.show()
         # Wait for page ready (JS sets the event after page_ready is received)
         self._page_ready_event.wait(timeout=5.0)
 
-        if self._dexcom.credentials.has_credentials():
-            success = self._dexcom.login_from_keychain()
-            if success:
-                self._do_refresh()          # Immediately refresh once on startup
-                self._start_timer()         # Start the fixed-interval timer
-                self._call_on_main(self._register_global_hotkey)
-                if self._display_mode == DISPLAY_MODE_HOVER:
-                    # Hover mode: switch to floating ball after startup
-                    self._call_on_main(self._do_minimize_to_ball)
-                return
+        if self._provider_type == "freestyle_libre":
+            if self._libre.has_credentials():
+                success = self._libre.login_from_keychain()
+                if success:
+                    self._do_refresh()
+                    self._start_timer()
+                    self._call_on_main(self._register_global_hotkey)
+                    if self._display_mode == DISPLAY_MODE_HOVER:
+                        self._call_on_main(self._do_minimize_to_ball)
+                    return
+        else:
+            if self._dexcom.credentials.has_credentials():
+                success = self._dexcom.login_from_keychain()
+                if success:
+                    self._do_refresh()          # Immediately refresh once on startup
+                    self._start_timer()         # Start the fixed-interval timer
+                    self._call_on_main(self._register_global_hotkey)
+                    if self._display_mode == DISPLAY_MODE_HOVER:
+                        # Hover mode: switch to floating ball after startup
+                        self._call_on_main(self._do_minimize_to_ball)
+                    return
 
         log.info("No valid credentials or login failed, showing settings overlay")
         self._show_settings_overlay()
@@ -148,7 +173,7 @@ class CGMApp(rumps.App):
         if self._timer:
             self._timer.stop()
             self._timer = None
-        if not self._dexcom.is_logged_in():
+        if not self._current_provider.is_logged_in():
             return
         self._timer = rumps.Timer(self._on_timer_fire, self._refresh_interval)
         self._timer.start()
@@ -168,21 +193,27 @@ class CGMApp(rumps.App):
             log.debug("Refresh skipped (previous refresh still running)")
             return
         try:
-            if not self._dexcom.is_logged_in():
+            if not self._current_provider.is_logged_in():
                 log.warning("Not logged in, attempting to rebuild session from keychain...")
-                if self._dexcom.credentials.has_credentials():
+                if self._provider_type == "dexcom" and self._dexcom.credentials.has_credentials():
                     ok = self._dexcom.refresh_session()  # No test request, avoiding extra API call
                     if not ok:
                         log.warning("Auto session rebuild failed, showing settings page")
+                        self._call_on_main(self._show_settings_overlay)
+                        return
+                elif self._provider_type == "freestyle_libre" and self._libre.has_credentials():
+                    ok = self._libre.login_from_keychain()
+                    if not ok:
+                        log.warning("Libre auto-relogin failed, showing settings page")
                         self._call_on_main(self._show_settings_overlay)
                         return
                 else:
                     self._call_on_main(self._show_settings_overlay)
                     return
             log.debug("Starting glucose data refresh")
-            reading = self._dexcom.get_current_reading()
-            self._dexcom.get_history()  # API fetch + store upsert (1440 min)
-            history = self._dexcom.get_history_from_store(minutes=DISPLAY_HISTORY_MINUTES)
+            reading = self._current_provider.get_current_reading()
+            self._current_provider.get_history()  # API fetch + store upsert (1440 min)
+            history = self._current_provider.get_history_from_store(minutes=DISPLAY_HISTORY_MINUTES)
             if reading:
                 self._last_reading = reading
                 self._history = history
@@ -379,7 +410,7 @@ class CGMApp(rumps.App):
 
     def _on_logout(self, _):
         log.info("User logged out")
-        self._dexcom.logout()
+        self._current_provider.logout()
         self.title = "⏳ CGM"
         self._menu_reading.title = "-- Logged out --"
         if self._timer:
@@ -398,6 +429,7 @@ class CGMApp(rumps.App):
         """Push settings config to JS, show settings overlay"""
         username, password, ous = self._dexcom.credentials.load()
         config = {
+            "provider": self._provider_type,
             "username": username or "",
             "password": password or "",
             "ous": ous,
@@ -410,6 +442,10 @@ class CGMApp(rumps.App):
             "thresh_alert":  self._thresh_alert,
             "alert_enabled": self._alert_enabled,
         }
+        if self._provider_type == "freestyle_libre":
+            libre_email, _, libre_region = self._libre.load_credentials()
+            config["libre_email"]  = libre_email  or ""
+            config["libre_region"] = libre_region or "US"
         self._html_window.show_settings(config)
 
     # ─── Global hotkey ────────────────────────────────────────
@@ -479,6 +515,10 @@ class CGMApp(rumps.App):
             threading.Thread(target=self._handle_test_dexcom, args=(body,), daemon=True).start()
         elif action == "save_dexcom":
             threading.Thread(target=self._handle_save_dexcom, args=(body,), daemon=True).start()
+        elif action == "test_libre":
+            threading.Thread(target=self._handle_test_libre, args=(body,), daemon=True).start()
+        elif action == "save_libre":
+            threading.Thread(target=self._handle_save_libre, args=(body,), daemon=True).start()
         elif action == "save_display":
             self._handle_save_display(body)
 
@@ -521,6 +561,47 @@ class CGMApp(rumps.App):
             self._call_on_main(self._register_global_hotkey)
         else:
             self._html_window.settings_result({"type": "save_dexcom", "success": False, "message": "Login failed. Check credentials."})
+
+    def _handle_test_libre(self, body: dict):
+        email    = body.get("email", "").strip()
+        password = body.get("password", "")
+        is_eu    = body.get("is_eu", False)
+        region   = "EU" if is_eu else "US"
+        if not email or not password:
+            self._html_window.settings_result({"type": "test_libre", "success": False, "message": "Email and password required"})
+            return
+        try:
+            from pylibrelinkup import PyLibreLinkUp
+            client = PyLibreLinkUp(email=email, password=password)
+            client.authenticate()
+            patients = client.get_patients()
+            if not patients:
+                self._html_window.settings_result({"type": "test_libre", "success": False, "message": "No patients found on this account"})
+                return
+            self._html_window.settings_result({"type": "test_libre", "success": True, "message": "Connected successfully"})
+        except Exception as e:
+            self._html_window.settings_result({"type": "test_libre", "success": False, "message": str(e)})
+
+    def _handle_save_libre(self, body: dict):
+        email    = body.get("email", "").strip()
+        password = body.get("password", "")
+        is_eu    = body.get("is_eu", False)
+        region   = "EU" if is_eu else "US"
+        if not email or not password:
+            self._html_window.settings_result({"type": "save_libre", "success": False, "message": "Email and password required"})
+            return
+        success = self._libre.login(email, password, region)
+        if success:
+            self._provider_type = "freestyle_libre"
+            self._current_provider = self._libre
+            self._last_reading = None  # Clear stale Dexcom data
+            ui_state.save_provider_type("freestyle_libre")
+            self._html_window.settings_result({"type": "save_libre", "success": True, "message": "Logged in"})
+            threading.Thread(target=self._do_refresh, daemon=True).start()
+            self._start_timer()
+            self._call_on_main(self._register_global_hotkey)
+        else:
+            self._html_window.settings_result({"type": "save_libre", "success": False, "message": "Login failed. Check credentials."})
 
     def _handle_save_display(self, body: dict):
         interval = body.get("interval", REFRESH_INTERVAL_DEFAULT)

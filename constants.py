@@ -81,3 +81,8 @@ KEYRING_ALERT_ENABLED = "alert_enabled"
 DEFAULT_THRESH_LOW   = 70
 DEFAULT_THRESH_HIGH  = 180
 DEFAULT_THRESH_ALERT = 250
+
+# FreeStyle Libre keyring keys
+KEYRING_LIBRE_EMAIL_KEY    = "libre_email"
+KEYRING_LIBRE_PASSWORD_KEY = "libre_password"
+KEYRING_LIBRE_REGION_KEY   = "libre_region"   # "US" | "EU"

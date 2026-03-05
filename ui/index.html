@@ -538,8 +538,17 @@
     </div>
     <div id="settings-body">
 
-      <!-- Dexcom -->
+      <!-- Provider Selector -->
       <div class="s-section">
+        <div class="s-label">Data Source</div>
+        <div class="s-btn-row">
+          <button class="interval-btn active" data-provider="dexcom" onclick="selectProvider('dexcom')">Dexcom</button>
+          <button class="interval-btn" data-provider="freestyle_libre" onclick="selectProvider('freestyle_libre')">FreeStyle Libre</button>
+        </div>
+      </div>
+
+      <!-- Dexcom -->
+      <div id="dexcom-section" class="s-section">
         <div class="s-label">Dexcom Account</div>
         <input type="text" id="s-username" class="s-input" placeholder="Username (email)" autocomplete="off" spellcheck="false">
         <input type="password" id="s-password" class="s-input" placeholder="Password" autocomplete="off">
@@ -551,6 +560,22 @@
           <button class="s-btn s-btn-sec" onclick="testDexcom()">Test</button>
           <button class="s-btn s-btn-pri" onclick="saveDexcom()">Save &amp; Login</button>
           <div id="dexcom-status" class="s-status"></div>
+        </div>
+      </div>
+
+      <!-- FreeStyle Libre -->
+      <div id="libre-section" class="s-section" style="display:none">
+        <div class="s-label">FreeStyle Libre Account</div>
+        <input id="s-libre-email" type="email" class="s-input" placeholder="Email" autocomplete="off" spellcheck="false">
+        <input id="s-libre-password" type="password" class="s-input" placeholder="Password" autocomplete="off">
+        <label class="s-check-row">
+          <input type="checkbox" id="s-libre-eu">
+          <span>EU Region</span>
+        </label>
+        <div class="s-btn-row">
+          <button class="s-btn s-btn-sec" onclick="testLibre()">Test</button>
+          <button class="s-btn s-btn-pri" onclick="saveLibre()">Save &amp; Login</button>
+          <div id="libre-status" class="s-status"></div>
         </div>
       </div>
 
@@ -1118,6 +1143,19 @@
   let settingsAlertEnabled = true;
 
   window.showSettings = function(config) {
+    // Provider selector
+    const provider = config.provider || 'dexcom';
+    document.querySelectorAll('.interval-btn[data-provider]').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.provider === provider);
+    });
+    document.getElementById('dexcom-section').style.display = (provider === 'dexcom') ? '' : 'none';
+    document.getElementById('libre-section').style.display  = (provider === 'freestyle_libre') ? '' : 'none';
+    // Libre fields
+    if (config.libre_email)  document.getElementById('s-libre-email').value = config.libre_email;
+    document.getElementById('s-libre-eu').checked = (config.libre_region === 'EU');
+    document.getElementById('s-libre-password').value = '';
+    setStatus('libre-status', '', '');
+    // Dexcom fields
     if (config.username) document.getElementById('s-username').value = config.username;
     const pwEl = document.getElementById('s-password');
     pwEl.value = config.password || '';
@@ -1150,6 +1188,7 @@
     document.getElementById('s-alert-enabled').checked = settingsAlertEnabled;
     setStatus('dexcom-status', '', '');
     setStatus('display-status', '', '');
+    setStatus('libre-status', '', '');
     document.getElementById('settings-overlay').classList.add('visible');
     send({ action: 'settings_open' });
   };
@@ -1186,6 +1225,30 @@
     const ous = document.getElementById('s-ous').checked;
     setStatus('dexcom-status', '', 'Logging in...');
     send({ action: 'save_dexcom', username, password, ous });
+  }
+
+  function selectProvider(p) {
+    document.querySelectorAll('.interval-btn[data-provider]').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.provider === p);
+    });
+    document.getElementById('dexcom-section').style.display = (p === 'dexcom') ? '' : 'none';
+    document.getElementById('libre-section').style.display  = (p === 'freestyle_libre') ? '' : 'none';
+  }
+
+  function testLibre() {
+    const email    = document.getElementById('s-libre-email').value.trim();
+    const password = document.getElementById('s-libre-password').value;
+    const is_eu    = document.getElementById('s-libre-eu').checked;
+    setStatus('libre-status', '', 'Testing...');
+    send({ action: 'test_libre', email, password, is_eu });
+  }
+
+  function saveLibre() {
+    const email    = document.getElementById('s-libre-email').value.trim();
+    const password = document.getElementById('s-libre-password').value;
+    const is_eu    = document.getElementById('s-libre-eu').checked;
+    setStatus('libre-status', '', 'Logging in...');
+    send({ action: 'save_libre', email, password, is_eu });
   }
 
   function selectUnit(u) {
@@ -1277,6 +1340,17 @@
           setTimeout(closeSettings, 700);
         } else {
           setStatus('dexcom-status', 'err', '✗ ' + msg);
+        }
+        break;
+      case 'test_libre':
+        setStatus('libre-status', ok ? 'ok' : 'err', ok ? '✓ ' + msg : '✗ ' + msg);
+        break;
+      case 'save_libre':
+        if (ok) {
+          setStatus('libre-status', 'ok', '✓ Logged in');
+          setTimeout(closeSettings, 700);
+        } else {
+          setStatus('libre-status', 'err', '✗ ' + msg);
         }
         break;
       case 'save_display':

@@ -53,3 +53,18 @@ def load_range() -> int | None:
     with _lock:
         d = _load()
         return d.get("last_range")
+
+
+def save_provider_type(provider: str):
+    """Save the active provider type: 'dexcom' or 'freestyle_libre'."""
+    with _lock:
+        d = _load()
+        d["provider"] = provider
+        _save(d)
+
+
+def load_provider_type() -> str:
+    """Load the active provider type. Defaults to 'dexcom'."""
+    with _lock:
+        d = _load()
+        return d.get("provider", "dexcom")
