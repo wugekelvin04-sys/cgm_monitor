@@ -818,7 +818,7 @@
     canvas.style.height = h + 'px';
 
     const ctx = canvas.getContext('2d');
-    ctx.scale(dpr, dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
 
     const AXIS_H = 16; // Time axis height
@@ -860,8 +860,8 @@
     // Reference lines: threshLow / threshHigh (gray dashed) + threshAlert (red dashed)
     [threshLow, threshHigh].forEach(v => {
       if (v <= Y_MIN || v >= Y_MAX) return;
-      ctx.strokeStyle = 'rgba(26,26,46,0.12)';
-      ctx.lineWidth = 0.5;
+      ctx.strokeStyle = 'rgba(26,26,46,0.18)';
+      ctx.lineWidth = 0.75;
       ctx.setLineDash([3, 3]);
       ctx.beginPath();
       ctx.moveTo(PAD_L, toY(v));
@@ -869,8 +869,8 @@
       ctx.stroke();
     });
     if (threshAlert > Y_MIN && threshAlert < Y_MAX) {
-      ctx.strokeStyle = 'rgba(220,38,38,0.35)';
-      ctx.lineWidth = 0.5;
+      ctx.strokeStyle = 'rgba(220,38,38,0.45)';
+      ctx.lineWidth = 0.75;
       ctx.setLineDash([3, 3]);
       ctx.beginPath();
       ctx.moveTo(PAD_L, toY(threshAlert));
@@ -891,7 +891,7 @@
     history.sort((a, b) => a.t - b.t);
 
     // Main line segments: each segment colored by glucose value, break line if gap exceeds 15 minutes
-    ctx.lineWidth = 1.8;
+    ctx.lineWidth = 2;
     ctx.lineJoin = 'round';
     ctx.lineCap = 'round';
     history.forEach((pt, i) => {
