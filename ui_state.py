@@ -1,9 +1,14 @@
 """Lightweight JSON state file for persisting UI preferences (window position, last range)."""
 import json
+import os
 import pathlib
+import sys
 import threading
 
-_STATE_DIR = pathlib.Path.home() / "Library" / "Application Support" / "CGMMonitor"
+if sys.platform == "win32":
+    _STATE_DIR = pathlib.Path(os.getenv("APPDATA", pathlib.Path.home())) / "CGMMonitor"
+else:
+    _STATE_DIR = pathlib.Path.home() / "Library" / "Application Support" / "CGMMonitor"
 _STATE_FILE = _STATE_DIR / "ui_state.json"
 _lock = threading.Lock()
 

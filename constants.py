@@ -86,3 +86,4 @@ DEFAULT_THRESH_ALERT = 250
 KEYRING_LIBRE_EMAIL_KEY    = "libre_email"
 KEYRING_LIBRE_PASSWORD_KEY = "libre_password"
 KEYRING_LIBRE_REGION_KEY   = "libre_region"   # "US" | "EU"
+KEYRING_PROVIDER_KEY       = "provider_type"  # "dexcom" | "freestyle_libre"

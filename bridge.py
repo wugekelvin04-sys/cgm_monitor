@@ -47,15 +47,36 @@ try:
 except Exception:
     log.info("truststore unavailable, using system default SSL")
 
+import keyring
 from dexcom_client import DexcomClient
-from constants import REFRESH_INTERVAL_DEFAULT
+from libre_client import LibreClient
+from constants import (
+    REFRESH_INTERVAL_DEFAULT, KEYRING_SERVICE, KEYRING_PROVIDER_KEY,
+    ALERT_COOLDOWN_SEC, DEFAULT_THRESH_LOW, DEFAULT_THRESH_HIGH, DEFAULT_THRESH_ALERT,
+)
 
 # ── Global state ──────────────────────────────────────────────────────────────
 dexcom = DexcomClient()
+libre  = LibreClient()
+_provider = 'dexcom'   # 'dexcom' | 'freestyle_libre'
 _refresh_interval = REFRESH_INTERVAL_DEFAULT
 _refresh_lock = threading.Lock()
 _stop_event = threading.Event()
 _timer_thread: threading.Thread = None
+
+# ── Alert state ───────────────────────────────────────────────────────────────
+_thresh_low    = DEFAULT_THRESH_LOW
+_thresh_high   = DEFAULT_THRESH_HIGH
+_thresh_alert  = DEFAULT_THRESH_ALERT
+_alert_enabled = True
+_alert_last_notified: dict = {}
+_alert_lock = threading.Lock()
+_high_alert_active = False
+_last_reading = None
+
+
+def _active():
+    return libre if _provider == 'freestyle_libre' else dexcom
 
 
 # ── Protocol: stdout JSON Lines ───────────────────────────────────────────────
@@ -68,21 +89,86 @@ def send(msg: dict):
         sys.stdout.flush()
 
 
+# ── Alert logic ───────────────────────────────────────────────────────────────
+def _load_thresholds():
+    global _thresh_low, _thresh_high, _thresh_alert, _alert_enabled
+    saved = dexcom.credentials.load_thresholds()
+    if saved:
+        _thresh_low, _thresh_high, _thresh_alert, _alert_enabled = saved
+        log.info(f"Thresholds: low={_thresh_low} high={_thresh_high} alert={_thresh_alert} enabled={_alert_enabled}")
+
+
+def _check_alerts(reading):
+    global _high_alert_active
+    import time
+    v   = reading.value
+    now = time.time()
+
+    unit = dexcom.credentials.load_glucose_unit() or "mgdl"
+    if unit == "mmol":
+        val_str  = f"{v / 18.0182:.1f}"
+        unit_str = "mmol/L"
+    else:
+        val_str  = str(v)
+        unit_str = "mg/dL"
+
+    # ── Visual alert state ─────────────────────────────────────
+    new_high_alert = _alert_enabled and v > _thresh_alert
+    if new_high_alert != _high_alert_active:
+        _high_alert_active = new_high_alert
+        log.info(f"High alert {'activated' if new_high_alert else 'cleared'}: {v} mg/dL")
+        send({"type": "set_alert_ui", "active": new_high_alert})
+
+    if not _alert_enabled:
+        return
+
+    # ── Determine alert type ───────────────────────────────────
+    arrow = reading.trend_arrow
+    if v < 55:
+        alert_key, title, body = "very_low", "Very Low Glucose", f"Glucose {val_str} {unit_str} — Take action now!"
+    elif v < _thresh_low:
+        alert_key, title, body = "low", "Low Glucose", f"Glucose {val_str} {unit_str} {arrow}"
+    elif v > _thresh_alert:
+        alert_key, title, body = "high", "High Glucose", f"Glucose {val_str} {unit_str} {arrow}"
+    elif arrow in ('↓↓',) and v < _thresh_high:
+        alert_key, title, body = "drop_fast", "Glucose Dropping Fast", f"Glucose {val_str} {unit_str} {arrow}"
+    else:
+        return
+
+    # ── 15-min cooldown ────────────────────────────────────────
+    with _alert_lock:
+        last = _alert_last_notified.get(alert_key, 0)
+        if now - last < ALERT_COOLDOWN_SEC:
+            return
+        _alert_last_notified[alert_key] = now
+
+    log.warning(f"[Alert:{alert_key}] {v} mg/dL — sending notification")
+    send({"type": "glucose_alert", "title": title, "body": body})
+
+
 # ── Refresh logic ─────────────────────────────────────────────────────────────
 def _do_refresh():
+    global _last_reading
     if not _refresh_lock.acquire(blocking=False):
         return
     try:
-        reading = dexcom.get_current_reading()
-        history = dexcom.get_history()
+        provider = _active()
+        reading = provider.get_current_reading()
+        history = provider.get_history()
         if reading:
+            _last_reading = reading
             data = reading.to_dict()
             data["history"] = [
                 {"t": int(r.timestamp.timestamp()), "v": r.value}
                 for r in history
             ]
+            data["thresh_low"]    = _thresh_low
+            data["thresh_high"]   = _thresh_high
+            data["thresh_alert"]  = _thresh_alert
+            data["alert_enabled"] = _alert_enabled
             send({"type": "glucose_data", "data": data})
             log.debug(f"Pushed glucose data: {reading.value} {reading.trend_arrow}")
+            _check_alerts(reading)
         else:
             log.warning("Refresh returned empty result")
     except Exception as e:
@@ -94,9 +180,10 @@ def _do_refresh():
 def _do_startup_refresh():
     """On keychain login: first push cached store data immediately, then call API for fresh data.
     This ensures historical data is visible instantly on restart even before the API responds."""
+    provider = _active()
     # Step 1: push whatever is already in the local store (fast, no API call)
     try:
-        cached_history = dexcom.get_history_from_store()
+        cached_history = provider.get_history_from_store()
         if cached_history:
             latest = cached_history[-1]
             data = latest.to_dict()
@@ -116,7 +203,7 @@ def _do_startup_refresh():
 # ── Timer ────────────────────────────────────────────────────────────────────
 def _timer_loop(interval: int, stop: threading.Event):
     while not stop.wait(interval):
-        if dexcom.is_logged_in():
+        if _active().is_logged_in():
             threading.Thread(target=_do_refresh, daemon=True).start()
 
 
@@ -143,27 +230,45 @@ def _stop_timer():
 
 # ── Command handling ─────────────────────────────────────────────────────────
 def handle(cmd: dict):
+    global _provider, _refresh_interval, _thresh_low, _thresh_high, _thresh_alert, _alert_enabled, _last_reading
     action = cmd.get("type")
     log.debug(f"Received command: {action}")
 
     if action == "load_credentials":
+        saved_provider = keyring.get_password(KEYRING_SERVICE, KEYRING_PROVIDER_KEY) or 'dexcom'
+        _provider = saved_provider
+
         username, password, ous = dexcom.credentials.load()
         interval = dexcom.credentials.load_refresh_interval() or REFRESH_INTERVAL_DEFAULT
         mode = dexcom.credentials.load_display_mode() or "window"
         unit = dexcom.credentials.load_glucose_unit() or "mgdl"
+
+        libre_email, libre_password, libre_region = libre.load_credentials()
+
+        _load_thresholds()
+
         send({
             "type": "credentials",
+            "provider_type": saved_provider,
             "username": username or "",
             "password": password or "",
-            "has_credentials": bool(username and password),
+            "has_credentials": bool(username and password) or libre.has_credentials(),
             "ous": ous,
             "interval": interval,
             "display_mode": mode,
             "unit": unit,
+            "libre_email": libre_email or "",
+            "libre_region": libre_region or "US",
+            "libre_has_credentials": libre.has_credentials(),
+            "thresh_low":    _thresh_low,
+            "thresh_high":   _thresh_high,
+            "thresh_alert":  _thresh_alert,
+            "alert_enabled": _alert_enabled,
         })
 
     elif action == "login_from_keychain":
-        success = dexcom.login_from_keychain()
+        _provider = keyring.get_password(KEYRING_SERVICE, KEYRING_PROVIDER_KEY) or 'dexcom'
+        success = _active().login_from_keychain()
         send({"type": "login_result", "success": success, "from_keychain": True})
         if success:
             threading.Thread(target=_do_startup_refresh, daemon=True).start()
@@ -174,6 +279,9 @@ def handle(cmd: dict):
         password = cmd.get("password", "")
         ous = cmd.get("ous", False)
         success = dexcom.login(username, password, ous)
+        if success:
+            _provider = 'dexcom'
+            keyring.set_password(KEYRING_SERVICE, KEYRING_PROVIDER_KEY, 'dexcom')
         send({"type": "save_credentials_result", "success": success})
         if success:
             threading.Thread(target=_do_refresh, daemon=True).start()
@@ -197,6 +305,45 @@ def handle(cmd: dict):
             log.warning(f"test_credentials failed: {type(e).__name__}: {e}")
             send({"type": "test_credentials_result", "success": False, "message": str(e)})
 
+    elif action == "test_libre":
+        email = cmd.get("email", "").strip()
+        password = cmd.get("password", "")
+        region = "EU" if cmd.get("is_eu") else "US"
+        try:
+            from pylibrelinkup import PyLibreLinkUp
+            client = PyLibreLinkUp(email=email, password=password)
+            client.authenticate()
+            patients = client.get_patients()
+            if not patients:
+                raise Exception("No patients found")
+            send({"type": "test_libre_result", "success": True, "message": "Connected successfully"})
+        except Exception as e:
+            log.warning(f"test_libre failed: {type(e).__name__}: {e}")
+            send({"type": "test_libre_result", "success": False, "message": str(e)})
+
+    elif action == "save_libre":
+        email = cmd.get("email", "").strip()
+        password = cmd.get("password", "")
+        region = "EU" if cmd.get("is_eu") else "US"
+        success = libre.login(email, password, region)
+        if success:
+            _provider = 'freestyle_libre'
+            keyring.set_password(KEYRING_SERVICE, KEYRING_PROVIDER_KEY, 'freestyle_libre')
+            _start_timer()
+            threading.Thread(target=_do_refresh, daemon=True).start()
+        send({"type": "save_libre_result", "success": success})
+
+    elif action == "save_thresholds":
+        def _clamp(v, lo, hi): return max(lo, min(hi, int(v)))
+        _thresh_low    = _clamp(cmd.get("thresh_low",    DEFAULT_THRESH_LOW),   40,  200)
+        _thresh_high   = _clamp(cmd.get("thresh_high",   DEFAULT_THRESH_HIGH),  80,  350)
+        _thresh_alert  = _clamp(cmd.get("thresh_alert",  DEFAULT_THRESH_ALERT), 100, 400)
+        _alert_enabled = bool(cmd.get("alert_enabled", True))
+        dexcom.credentials.save_thresholds(_thresh_low, _thresh_high, _thresh_alert, _alert_enabled)
+        if _last_reading:
+            _check_alerts(_last_reading)
+        send({"type": "save_thresholds_result", "success": True})
+
     elif action == "save_display":
         interval = cmd.get("interval", REFRESH_INTERVAL_DEFAULT)
         mode = cmd.get("display_mode", "window")
@@ -204,8 +351,17 @@ def handle(cmd: dict):
         dexcom.credentials.save_refresh_interval(interval)
         dexcom.credentials.save_display_mode(mode)
         dexcom.credentials.save_glucose_unit(unit)
-        global _refresh_interval
         _refresh_interval = interval
+        # Save thresholds if included in the same message
+        if "thresh_low" in cmd or "thresh_alert" in cmd:
+            def _clamp(v, lo, hi): return max(lo, min(hi, int(v)))
+            _thresh_low    = _clamp(cmd.get("thresh_low",    DEFAULT_THRESH_LOW),   40,  200)
+            _thresh_high   = _clamp(cmd.get("thresh_high",   DEFAULT_THRESH_HIGH),  80,  350)
+            _thresh_alert  = _clamp(cmd.get("thresh_alert",  DEFAULT_THRESH_ALERT), 100, 400)
+            _alert_enabled = bool(cmd.get("alert_enabled", True))
+            dexcom.credentials.save_thresholds(_thresh_low, _thresh_high, _thresh_alert, _alert_enabled)
+            if _last_reading:
+                _check_alerts(_last_reading)
         _start_timer()
         send({"type": "save_display_result", "success": True})
 
@@ -213,7 +369,12 @@ def handle(cmd: dict):
         threading.Thread(target=_do_refresh, daemon=True).start()
 
     elif action == "logout":
-        dexcom.logout()
+        _active().logout()
+        _provider = 'dexcom'
+        try:
+            keyring.delete_password(KEYRING_SERVICE, KEYRING_PROVIDER_KEY)
+        except Exception:
+            pass
         _stop_timer()
         send({"type": "logout_done"})
 

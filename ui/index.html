@@ -757,6 +757,10 @@
 
     drawChart(history, color);
     hoverHistory = history.slice(); // Save after drawChart sorts
+
+    // Alert badge: recompute every render so state survives page reloads / settings toggling
+    const alertActive = alertEnabled && d.value != null && d.value > threshAlert;
+    document.getElementById('alert-badge').classList.toggle('active', alertActive);
   }
 
   // ─── Time range switching ────────────────────────────
@@ -1132,6 +1136,7 @@
     window.electronAPI.on('do_collapse',      () => window.startCollapseAnimation?.());
     window.electronAPI.on('do_expand',        () => window.startExpandAnimation?.());
     window.electronAPI.on('compact_applied',  (data) => applyCompactLayout(data.compact));
+    window.electronAPI.on('set_alert_ui',     (data) => window.setAlert(data.active));
   }
 
   // ─── Settings ────────────────────────────────────────

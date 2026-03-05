@@ -4,13 +4,16 @@
 <meta charset="UTF-8">
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; user-select: none; -webkit-user-select: none; }
-  html, body { width: 44px; height: 44px; background: transparent; overflow: hidden; }
+  html, body {
+    width: 72px; height: 72px;
+    background: transparent; overflow: hidden;
+    display: flex; align-items: center; justify-content: center;
+  }
 
   #ball {
     width: 44px; height: 44px;
     border-radius: 50%;
     background: rgba(255, 255, 255, 0.96);
-    border: 0.5px solid rgba(0, 0, 0, 0.08);
     position: relative;
     cursor: pointer;
     display: flex; align-items: center; justify-content: center;
@@ -31,6 +34,15 @@
     z-index: 2;
     line-height: 1;
   }
+
+  #ball.alert {
+    border: 2px solid #dc2626;
+    animation: ballAlertPulse 1.2s ease-in-out infinite;
+  }
+  @keyframes ballAlertPulse {
+    0%, 100% { box-shadow: 0 0 5px 5px rgba(220, 38, 38, 0.90); }
+    50%       { box-shadow: 0 0 10px 4px rgba(220, 38, 38, 0.18); }
+  }
 </style>
 </head>
 <body>
@@ -43,10 +55,16 @@
   // Trend -> angle (math: 0°=right, 90°=up)
   const TREND_ANGLE = { '↑↑': 90, '↑': 90, '↗': 45, '→': 0, '↘': -45, '↓': -90, '↓↓': -90 }
 
+  let ballThreshLow   = 70
+  let ballThreshHigh  = 180
+  let ballThreshAlert = 250
+
   function glucoseColor(v) {
-    if (v < 55 || v > 250) return '#dc2626'
-    if (v < 70 || v > 180) return '#d97706'
-    return '#16a34a'
+    if (v < 55)                return '#dc2626'
+    if (v < ballThreshLow)     return '#d97706'
+    if (v <= ballThreshHigh)   return '#16a34a'
+    if (v <= ballThreshAlert)  return '#d97706'
+    return '#dc2626'
   }
 
   function drawArc(color, trend) {
@@ -66,12 +84,24 @@
     ctx.stroke()
   }
 
+  // ── Alert state ──────────────────────────────────────────────────────────────
+  let alertActive = false
+
+  function applyAlert(active) {
+    alertActive = !!active
+    document.getElementById('ball').classList.toggle('alert', alertActive)
+  }
+
   // ── Update display ───────────────────────────────────────────────────────────
   function update(data) {
+    if (data.thresh_low   != null) ballThreshLow   = data.thresh_low
+    if (data.thresh_high  != null) ballThreshHigh  = data.thresh_high
+    if (data.thresh_alert != null) ballThreshAlert = data.thresh_alert
     const color = glucoseColor(data.value)
     document.getElementById('val').textContent  = data.display_value != null ? data.display_value : data.value
     document.getElementById('val').style.color  = color
     drawArc(color, data.trend || '→')
+    if (data.alert !== undefined) applyAlert(data.alert)
   }
 
   // Initial draw
@@ -79,6 +109,7 @@
 
   // ── IPC ─────────────────────────────────────────────────────────────────────
   window.electronAPI?.on('update_ball', update)
+  window.electronAPI?.on('set_alert_ui', (data) => applyAlert(data.active))
 
   // ── Drag (Y-axis) ──────────────────────────────────────────────────────────
   let dragStartScreenY = 0

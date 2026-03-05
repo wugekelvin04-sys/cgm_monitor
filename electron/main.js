@@ -1,5 +1,5 @@
 'use strict'
-const { app, BrowserWindow, Tray, Menu, ipcMain, screen, nativeImage } = require('electron')
+const { app, BrowserWindow, Tray, Menu, ipcMain, screen, nativeImage, Notification } = require('electron')
 const path = require('path')
 const { spawn } = require('child_process')
 const readline = require('readline')
@@ -8,8 +8,9 @@ const readline = require('readline')
 const MAIN_W    = 300
 const MAIN_H    = 220
 const COMPACT_H = 80
-const BALL_W    = 44
-const BALL_H    = 44
+const BALL_W    = 72
+const BALL_H    = 72
+const BALL_PAD  = 14  // transparent padding around visual ball for glow
 const MARGIN    = 20
 
 // ── State ──────────────────────────────────────────────────────────────────────
@@ -23,6 +24,14 @@ let currentInterval = 120     // refresh interval in seconds
 let currentUsername = ''
 let currentPassword = ''
 let currentOus      = false
+let ballAlertActive    = false
+let currentProvider    = 'dexcom'
+let currentLibreEmail  = ''
+let currentLibreRegion = 'US'
+let currentThreshLow    = 70
+let currentThreshHigh   = 180
+let currentThreshAlert  = 250
+let currentAlertEnabled = true
 let settingsOpen = false
 let collapseTimer = null
 let currentMainH = MAIN_H   // Track actual main window height (changes in compact mode)
@@ -98,22 +107,36 @@ function onPythonMsg(msg) {
   switch (msg.type) {
 
     case 'credentials':
-      displayMode     = msg.display_mode || 'window'
-      glucoseUnit     = msg.unit || 'mgdl'
-      currentInterval = msg.interval || 120
-      currentUsername = msg.username || ''
-      currentPassword = msg.password || ''
-      currentOus      = !!msg.ous
+      displayMode        = msg.display_mode || 'window'
+      glucoseUnit        = msg.unit || 'mgdl'
+      currentInterval    = msg.interval || 120
+      currentUsername    = msg.username || ''
+      currentPassword    = msg.password || ''
+      currentOus         = !!msg.ous
+      currentProvider    = msg.provider_type || 'dexcom'
+      currentLibreEmail  = msg.libre_email  || ''
+      currentLibreRegion = msg.libre_region || 'US'
+      currentThreshLow    = msg.thresh_low    ?? 70
+      currentThreshHigh   = msg.thresh_high   ?? 180
+      currentThreshAlert  = msg.thresh_alert  ?? 250
+      currentAlertEnabled = msg.alert_enabled ?? true
       if (msg.has_credentials) {
         toPython({ type: 'login_from_keychain' })
       } else {
         showMain()
         toRenderer('show_settings', {
-          username: msg.username || '',
-          ous: msg.ous,
-          interval: msg.interval,
-          display_mode: msg.display_mode,
-          unit: msg.unit || 'mgdl',
+          provider_type:  currentProvider,
+          username:       msg.username || '',
+          ous:            msg.ous,
+          libre_email:    currentLibreEmail,
+          libre_region:   currentLibreRegion,
+          interval:       msg.interval,
+          display_mode:   msg.display_mode,
+          unit:           msg.unit || 'mgdl',
+          thresh_low:     currentThreshLow,
+          thresh_high:    currentThreshHigh,
+          thresh_alert:   currentThreshAlert,
+          alert_enabled:  currentAlertEnabled,
         })
       }
       break
@@ -135,8 +158,18 @@ function onPythonMsg(msg) {
       break
 
     case 'glucose_data':
+      if (msg.data.thresh_low    != null) currentThreshLow    = msg.data.thresh_low
+      if (msg.data.thresh_high   != null) currentThreshHigh   = msg.data.thresh_high
+      if (msg.data.thresh_alert  != null) currentThreshAlert  = msg.data.thresh_alert
+      if (msg.data.alert_enabled != null) currentAlertEnabled = msg.data.alert_enabled
       toRenderer('update_glucose', { ...msg.data, unit: glucoseUnit })
-      toBall('update_ball', msg.data)
+      toBall('update_ball', {
+        ...msg.data,
+        alert:       ballAlertActive,
+        thresh_low:  currentThreshLow,
+        thresh_high: currentThreshHigh,
+        thresh_alert: currentThreshAlert,
+      })
       updateTray(msg.data)
       break
 
@@ -159,6 +192,25 @@ function onPythonMsg(msg) {
       })
       break
 
+    case 'save_libre_result':
+      toRenderer('settings_result', {
+        type: 'save_libre',
+        success: msg.success,
+        message: msg.success ? 'Logged in' : 'Login failed. Check credentials.',
+      })
+      if (msg.success && displayMode === 'hover') {
+        setTimeout(minimizeToBall, 700)
+      }
+      break
+
+    case 'test_libre_result':
+      toRenderer('settings_result', {
+        type: 'test_libre',
+        success: msg.success,
+        message: msg.message,
+      })
+      break
+
     case 'save_display_result':
       toRenderer('settings_result', { type: 'save_display', success: true, message: 'Saved' })
       break
@@ -166,6 +218,22 @@ function onPythonMsg(msg) {
     case 'logout_done':
       showMain()
       toRenderer('show_settings', {})
+      break
+
+    case 'glucose_alert':
+      if (Notification.isSupported()) {
+        new Notification({ title: msg.title, body: msg.body, silent: false }).show()
+      }
+      break
+
+    case 'set_alert_ui':
+      ballAlertActive = !!msg.active
+      toRenderer('set_alert_ui', { active: msg.active })
+      toBall('set_alert_ui', { active: msg.active })
+      break
+
+    case 'save_thresholds_result':
+      toRenderer('settings_result', { type: 'save_thresholds', success: true, message: 'Saved' })
       break
 
     case 'error':
@@ -221,14 +289,14 @@ function createBall() {
   ballWindow = new BrowserWindow({
     width:  BALL_W,
     height: BALL_H,
-    x: fixedX(BALL_W),
+    x: fixedX(BALL_W - BALL_PAD),
     y: d.workArea.y + 10,
     frame:       false,
     transparent: true,
     alwaysOnTop: true,
     resizable:   false,
     skipTaskbar: true,
-    hasShadow:   true,
+    hasShadow:   false,
     show:        false,
     webPreferences: {
       preload:          path.join(__dirname, 'preload.js'),
@@ -244,7 +312,7 @@ function createBall() {
 function showBall(y) {
   if (!ballWindow) createBall()
   if (y !== undefined) {
-    ballWindow.setPosition(fixedX(BALL_W), clampY(y, BALL_H))
+    ballWindow.setPosition(fixedX(BALL_W - BALL_PAD), clampY(y, BALL_H))
   }
   ballWindow.show()
 }
@@ -276,7 +344,7 @@ function expandFromBall() {
   hideBall()
   showMain()
   if (ballBounds && mainWindow) {
-    const winX = ballBounds.x + BALL_W - MAIN_W
+    const winX = ballBounds.x + (BALL_W - BALL_PAD) - MAIN_W
     mainWindow.setPosition(winX, clampY(ballBounds.y, currentMainH))
   }
   toRenderer('do_expand', {})
@@ -367,7 +435,7 @@ function handleBallMsg(msg) {
       if (ballWindow) {
         const dy   = msg.screenY - ballDragStartScreenY
         const newY = clampY(ballDragStartWindowY + dy, BALL_H)
-        ballWindow.setPosition(fixedX(BALL_W), newY)
+        ballWindow.setPosition(fixedX(BALL_W - BALL_PAD), newY)
       }
       break
   }
@@ -393,12 +461,19 @@ function handleMainMsg(msg) {
     case 'open_settings':
       showMain()
       toRenderer('show_settings', {
-        username:     currentUsername,
-        password:     currentPassword,
-        ous:          currentOus,
-        interval:     currentInterval,
-        display_mode: displayMode,
-        unit:         glucoseUnit,
+        provider_type:  currentProvider,
+        username:       currentUsername,
+        password:       currentPassword,
+        ous:            currentOus,
+        libre_email:    currentLibreEmail,
+        libre_region:   currentLibreRegion,
+        interval:       currentInterval,
+        display_mode:   displayMode,
+        unit:           glucoseUnit,
+        thresh_low:     currentThreshLow,
+        thresh_high:    currentThreshHigh,
+        thresh_alert:   currentThreshAlert,
+        alert_enabled:  currentAlertEnabled,
       })
       break
     case 'settings_open':
@@ -422,16 +497,35 @@ function handleMainMsg(msg) {
       currentUsername = msg.username || ''
       currentPassword = msg.password || ''
       currentOus      = !!msg.ous
+      currentProvider = 'dexcom'
       toPython({ type: 'save_credentials', username: msg.username, password: msg.password, ous: msg.ous })
       break
     case 'test_dexcom':
       toPython({ type: 'test_credentials', username: msg.username, password: msg.password, ous: msg.ous })
       break
+    case 'save_libre':
+      currentLibreEmail  = msg.email  || ''
+      currentLibreRegion = msg.is_eu ? 'EU' : 'US'
+      currentProvider    = 'freestyle_libre'
+      toPython({ type: 'save_libre', email: msg.email, password: msg.password, is_eu: msg.is_eu })
+      break
+    case 'test_libre':
+      toPython({ type: 'test_libre', email: msg.email, password: msg.password, is_eu: msg.is_eu })
+      break
     case 'save_display':
-      displayMode     = msg.display_mode || 'window'
-      glucoseUnit     = msg.unit || 'mgdl'
-      currentInterval = msg.interval || 120
-      toPython({ type: 'save_display', interval: msg.interval, display_mode: msg.display_mode, unit: msg.unit || 'mgdl' })
+      displayMode          = msg.display_mode || 'window'
+      glucoseUnit          = msg.unit || 'mgdl'
+      currentInterval      = msg.interval || 120
+      currentThreshLow     = msg.thresh_low    ?? currentThreshLow
+      currentThreshHigh    = msg.thresh_high   ?? currentThreshHigh
+      currentThreshAlert   = msg.thresh_alert  ?? currentThreshAlert
+      currentAlertEnabled  = msg.alert_enabled ?? currentAlertEnabled
+      toPython({
+        type: 'save_display',
+        interval: msg.interval, display_mode: msg.display_mode, unit: msg.unit || 'mgdl',
+        thresh_low: currentThreshLow, thresh_high: currentThreshHigh,
+        thresh_alert: currentThreshAlert, alert_enabled: currentAlertEnabled,
+      })
       break
     case 'set_compact': {
       const h = msg.compact ? COMPACT_H : MAIN_H
@@ -446,6 +540,19 @@ function handleMainMsg(msg) {
       toRenderer('compact_applied', { compact: msg.compact })
       break
     }
+    case 'save_thresholds':
+      currentThreshLow    = msg.thresh_low    ?? currentThreshLow
+      currentThreshHigh   = msg.thresh_high   ?? currentThreshHigh
+      currentThreshAlert  = msg.thresh_alert  ?? currentThreshAlert
+      currentAlertEnabled = msg.alert_enabled ?? currentAlertEnabled
+      toPython({
+        type: 'save_thresholds',
+        thresh_low:    currentThreshLow,
+        thresh_high:   currentThreshHigh,
+        thresh_alert:  currentThreshAlert,
+        alert_enabled: currentAlertEnabled,
+      })
+      break
     case 'logout':
       toPython({ type: 'logout' })
       break
