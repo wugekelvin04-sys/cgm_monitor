@@ -8,9 +8,9 @@
 
 **Project**: CGM Monitor
 **Type**: macOS status bar app (rumps + NSPanel + WKWebView) + Electron cross-platform build
-**Function**: Real-time Dexcom CGM glucose monitoring
+**Function**: Real-time CGM glucose monitoring — supports **Dexcom** and **FreeStyle Libre 2/3**
 **Run**: `python3 main.py` or double-click `cgm.command` (macOS); `cd electron && npm start` (Electron)
-**Dependencies**: `pydexcom`, `rumps`, `pyobjc`, `keyring`
+**Dependencies**: `pydexcom`, `pylibrelinkup`, `rumps`, `pyobjc`, `keyring`
 
 ---
 
@@ -38,11 +38,12 @@
 ```
 init/
 ├── main.py                # Entry point, starts CGMApp
-├── app.py                 # Core: rumps.App, Timer, JS message routing, settings handling
+├── app.py                 # Core: rumps.App, Timer, JS message routing, provider dispatch
 ├── html_window.py         # HTMLFloatingWindow: NSPanel + WKWebView main window
 ├── floating_ball.py       # FloatingBall: floating ball NSPanel (minimized state)
-├── dexcom_client.py       # Dexcom API wrapper (pydexcom), with CredentialManager
-├── ui_state.py            # JSON UI state persistence (window pos + time range)
+├── dexcom_client.py       # Dexcom API wrapper (pydexcom), with CredentialManager (shared settings)
+├── libre_client.py        # FreeStyle Libre API wrapper (pylibrelinkup), duck-typed to DexcomClient
+├── ui_state.py            # JSON UI state persistence (window pos + time range + provider type)
 ├── ai_analyzer.py         # GeminiAnalyzer (unused — AI removed from app.py)
 ├── bridge.py              # Python sidecar for Electron (JSON Lines over stdio)
 ├── local_store.py         # SQLite local storage (~/Library/Application Support/CGMMonitor/)
@@ -59,7 +60,7 @@ init/
 │   ├── ball.html          # Floating ball window
 │   └── package.json
 └── ui/
-    ├── index.html         # Main window HTML/CSS/JS (300×220px)
+    ├── index.html         # Main window HTML/CSS/JS (300×220px), includes provider selector
     └── settings.html      # Old settings page (deprecated)
 ```
 
@@ -137,12 +138,22 @@ init/
 | `set_compact` | main sends `compact_applied` back after `setBounds`; renderer applies CSS then |
 | `test_dexcom` | tests Dexcom connection |
 | `save_dexcom` | saves and logs in to Dexcom |
+| `test_libre` | tests FreeStyle Libre connection (pylibrelinkup authenticate + get_patients) |
+| `save_libre` | saves and logs in to FreeStyle Libre; switches `_current_provider` |
 | `save_display` | saves refresh interval and display mode, restarts timer |
 | `save_range` | saves selected chart time range to `ui_state.json` |
 | `collapse_done` | animation finished → switch from main window to ball |
 | `settings_open` | settings overlay opened → cancel collapse timer |
 | `settings_close` | settings overlay closed → schedule collapse (hover mode) |
 | `ball_contextmenu` | shows native popup menu (Refresh / Quit) instead of direct quit |
+
+### Provider Architecture (macOS native)
+- `app.py` holds `self._dexcom` (DexcomClient), `self._libre` (LibreClient), `self._current_provider` (dynamic pointer)
+- `self._provider_type`: `"dexcom"` | `"freestyle_libre"`, persisted to `ui_state.json` via `save_provider_type()`
+- All refresh calls go through `self._current_provider` (duck-typed interface: `is_logged_in`, `get_current_reading`, `get_history`, `get_history_from_store`, `logout`)
+- Shared settings (refresh interval, display mode, unit, thresholds, comparison) always read/written via `self._dexcom.credentials` (CredentialManager) regardless of active provider
+- Libre credentials stored separately in keyring: `libre_email`, `libre_password`, `libre_region` (`"US"` | `"EU"`)
+- Libre trend mapping: `{1:'↓↓', 2:'↓', 3:'→', 4:'↑', 5:'↑↑'}` (5 levels vs Dexcom's 7)
 
 ### Settings State (main.js)
 Cached in main process memory, updated on every save/load:
@@ -224,7 +235,7 @@ function glucoseColor(v) {
 ```
 
 ### Overlays
-- **Settings overlay** (`#settings-overlay`): Dexcom credentials + refresh interval + display mode; pre-fills saved values; auto-closes 700ms after successful login
+- **Settings overlay** (`#settings-overlay`): provider selector (Dexcom / FreeStyle Libre) + respective credentials + refresh interval + display mode; pre-fills saved values; auto-closes 700ms after successful login
 
 ### Key CSS/JS Rules
 - `#top-row` mousedown → JS sends `initiate_drag` (excludes `#icon-btns` area)
@@ -244,14 +255,16 @@ function glucoseColor(v) {
 
 ### UI State (ui_state.py)
 - Path: `~/Library/Application Support/CGMMonitor/ui_state.json`
-- Persists: `win_x`, `win_y` (main window position), `last_range` (chart time range in minutes)
+- Persists: `win_x`, `win_y` (main window position), `last_range` (chart time range in minutes), `provider` (active provider type)
 - `save_window_pos(x, y)` / `load_window_pos()` → called from `_PanelDelegate.windowDidMove_` (debounced 0.4s) and `_position_window()`
 - `save_range(minutes)` / `load_range()` → called from `save_range` JS action and `page_ready` handler
+- `save_provider_type(str)` / `load_provider_type()` → called on provider switch / startup
 - Position restore validates against `_screen_containing_point()`; falls back to default if screen not found
 
 ### Keyring (system Keychain / Credential Manager)
 - Service: `CGMMonitor`
-- Keys: `dexcom_username`, `dexcom_password`, `dexcom_region`, `refresh_interval`, `display_mode`
+- Dexcom keys: `dexcom_username`, `dexcom_password`, `dexcom_region`, `refresh_interval`, `display_mode`
+- Libre keys: `libre_email`, `libre_password`, `libre_region`
 
 ### SQLite (LocalStore)
 - Path: `~/Library/Application Support/CGMMonitor/<safe_username>.db`
