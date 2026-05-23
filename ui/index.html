@@ -792,6 +792,8 @@
       statsRow.style.display      = 'flex';
       rangeRow.style.display      = 'flex';
       compactBottom.style.display = 'none';
+      // Chart just became visible; redraw after layout fully settles (double rAF) to avoid stale/blurry canvas
+      requestAnimationFrame(() => requestAnimationFrame(() => { if (lastData) renderAll(); }));
     }
   }
 
@@ -1017,6 +1019,30 @@
   window.addEventListener('resize', () => {
     if (lastData) renderAll();
   });
+
+  // Monitor devicePixelRatio changes (e.g., window moved to a display with different DPI,
+  // or macOS display scaling changed). A DPR change does NOT fire a resize event, so the
+  // canvas would remain at the old physical resolution and appear blurry.
+  function setupDprWatcher() {
+    const mq = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+    mq.addEventListener('change', function handler() {
+      mq.removeEventListener('change', handler);
+      if (lastData) renderAll();
+      setupDprWatcher(); // re-register for the new DPR value
+    });
+  }
+  setupDprWatcher();
+
+  // Fallback: poll DPR every 3 s to catch any changes the matchMedia watcher misses
+  // (e.g., rapid DPR oscillation during display sleep/wake or macOS resolution switch).
+  let _lastKnownDpr = window.devicePixelRatio;
+  setInterval(() => {
+    const dpr = window.devicePixelRatio;
+    if (dpr !== _lastKnownDpr) {
+      _lastKnownDpr = dpr;
+      if (lastData) renderAll();
+    }
+  }, 3000);
 
   // ─── Chart mouse hover ───────────────────────────────
   let hoverHistory = [];
@@ -1312,6 +1338,8 @@
       if (e.animationName === 'expandIn') {
         app.removeEventListener('animationend', h);
         app.classList.remove('anim-expand');
+        // Redraw canvas at final (non-animated) size after expand completes
+        requestAnimationFrame(() => { if (lastData) renderAll(); });
       }
     });
   };
